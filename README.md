@@ -33,7 +33,7 @@ In OpenChamber, open **Settings → Extensions → Add extension** and paste:
 https://github.com/chenyuhao0628/openchamber-skills
 ```
 
-Requires OpenChamber **2.4.0 or newer**; **2.7.0** keeps a translation that finishes after the panel closes and merges it on the next open. The `model` capability is used only for the optional translation action.
+Requires OpenChamber **2.7.0 or newer** (using SDK 2.7.2, with `onLateGenerateResult` keeping translations that finish after the panel closes and merging them on the next open). The `model` capability is used only for the optional translation action.
 
 > Click **Enable all** before disabling or uninstalling the extension. The panel and Work Status copy follow the host language (Simplified Chinese or English). The full Chinese documentation is below.
 
@@ -41,7 +41,7 @@ Requires OpenChamber **2.4.0 or newer**; **2.7.0** keeps a translation that fini
 
 ## 简体中文
 
-当前版本 **0.4.0**，核对日期 **2026-11-11**。面板文案跟随宿主语言在简体中文和英文间切换。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、状态筛选与估算 Token 排序、中文翻译与单技能重译、按可编辑的联动分组批量开关（支持成员步骤顺序微调），并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
+当前版本 **0.4.1**，核对日期 **2026-11-16**。面板文案跟随宿主语言在简体中文和英文间切换。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、状态筛选与估算 Token 排序、中文翻译与单技能重译、按可编辑的联动分组批量开关（支持成员步骤顺序微调），并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
 
 ## 安装
 
@@ -50,6 +50,8 @@ Requires OpenChamber **2.4.0 or newer**; **2.7.0** keeps a translation that fini
 ```text
 https://github.com/chenyuhao0628/openchamber-skills
 ```
+
+0.4.1 将 `@openchamber/sdk` 升级至 `2.7.2`，并将 `engines.openchamber` 下限由 `>=2.4.0` 对齐为 `>=2.7.0`（匹配 `onLateGenerateResult` 等 2.7.0+ 能力基线）。
 
 0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置；0.3.0 增加可编辑分组并持久化到本地配置；0.3.1 把窄栏的分组标签收成下拉框，避免被裁切；0.3.2 首次安装不再预置作者分组，示例分组改为手动导入；0.3.4 在 OpenChamber 2.7.0 上接住面板关闭后到达的翻译结果，下次打开自动合并并保存；0.4.0 新增 SDK 搜索框、状态筛选、按估算 Token 排序、分段翻译页签与进度条、单技能重译/复制菜单及分组步骤顺序微调（`↑` / `↓`）。更新或重装时仍会出现模型调用权限提示。
 
