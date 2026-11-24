@@ -1,60 +1,52 @@
 const params = new URLSearchParams(location.search);
-const locale = params.get('locale') || 'zh-CN';
 let dark = params.get('theme') === 'dark';
 let width = Number(params.get('width') || 400);
 let mode = params.get('state') || 'clean';
 let resolved = false;
 
 const root = '~/.config/opencode/skills';
+const projectRoot = '~/workspace/.opencode/skills';
+const projectDirectory = '~/workspace';
 const pathFor = (id, file = 'SKILL.md') => `${root}/${id}/${file}`;
+const bareId = (key) => String(key).split(':').pop();
 
 const fixtures = [
-  { id: 'appkit-interop', name: 'AppKit Interop', description: 'SwiftUI/AppKit bridging, NSWindow, responder chain.', zhName: 'AppKit 互通', zhDescription: 'SwiftUI 与 AppKit 桥接、窗口和响应链。' },
-  { id: 'swiftui-patterns', name: 'SwiftUI Patterns', description: 'macOS SwiftUI scenes, windows, toolbars, inspectors.', zhName: 'SwiftUI 模式', zhDescription: 'macOS SwiftUI 场景、窗口、工具栏和检查器。' },
-  { id: 'window-management', name: 'Window Management', description: 'macOS windows, panels, placement and restoration.', zhName: '窗口管理', zhDescription: 'macOS 窗口、面板、停靠和恢复。' },
-  { id: 'liquid-glass', name: 'Liquid Glass', description: 'macOS 26 Liquid Glass surfaces and glass controls.', zhName: 'Liquid Glass', zhDescription: 'macOS 26 Liquid Glass 界面与玻璃控件。' },
-  { id: 'view-refactor', name: 'View Refactor', description: 'Split large SwiftUI views and stabilize scene state.', zhName: '视图重构', zhDescription: '拆分大型 SwiftUI 视图并稳定场景状态。' },
-  { id: 'build-run-debug', name: 'Build Run Debug', description: 'Xcode/Swift build, launch, and runtime failures.', zhName: '构建与调试', zhDescription: 'Xcode/Swift 构建、启动和运行时故障。' },
-  { id: 'test-triage', name: 'Test Triage', description: 'Narrow macOS test failures and separate setup issues.', zhName: '测试排查', zhDescription: '缩小 macOS 测试失败范围并区分环境问题。' },
-  { id: 'swiftpm-macos', name: 'SwiftPM macOS', description: 'SwiftPM macOS packages and executables.', zhName: 'SwiftPM', zhDescription: 'SwiftPM macOS 包和可执行文件。' },
-  { id: 'signing-entitlements', name: 'Signing Entitlements', description: 'macOS signing, entitlements, and Gatekeeper.', zhName: '签名与权限', zhDescription: 'macOS 签名、entitlements 和 Gatekeeper。' },
-  { id: 'packaging-notarization', name: 'Packaging Notarization', description: 'Archiving, notarization, and distribution failures.', zhName: '打包与公证', zhDescription: '归档、公证和分发失败排查。' },
-  { id: 'telemetry', name: 'Telemetry', description: 'Lightweight macOS runtime logging and events.', zhName: '遥测', zhDescription: '轻量 macOS 运行日志与事件。' },
-  { id: 'reverse-engineering-unpacking', name: 'RE Unpacking', description: 'PE/.NET, APK, and native ELF/SO triage and unpacking.', zhName: '逆向解包', zhDescription: 'PE/.NET、APK 和原生二进制的分诊与解包。' },
-  { id: 'kuna-decompiler', name: 'Kuna Decompiler', description: 'Recover searchable C and assembly with the Kuna CLI.', zhName: 'Kuna 反编译', zhDescription: '用 Kuna CLI 恢复 C/汇编并验证发现。' },
-  { id: 'reverse-engineer-anything', name: 'REA', description: 'Reverse engineer native, managed, Electron and firmware targets.', zhName: 'REA 逆向', zhDescription: '原生、托管、Electron 和固件目标逆向。' },
-  { id: 'cloudflare', name: 'Cloudflare', description: 'Choose Cloudflare products and architecture.', zhName: 'Cloudflare', zhDescription: '选择 Cloudflare 产品和架构。' },
-  { id: 'workers-best-practices', name: 'Workers Best Practices', description: 'Production Workers configuration and code practices.', zhName: 'Workers 最佳实践', zhDescription: '生产 Workers 的配置与代码实践。' },
-  { id: 'wrangler', name: 'Wrangler', description: 'Wrangler CLI dev, deploy, and resources.', zhName: 'Wrangler', zhDescription: 'Wrangler CLI 开发、部署和资源管理。' },
-  { id: 'yichen-jianying-edit', name: 'Jianying Edit', description: 'Headless editable Jianying drafts and export.', zhName: '剪映编辑', zhDescription: '无界面生成可编辑的剪映草稿。' },
-  { id: 'browser-skill', name: 'Browser Skill', description: 'Automate the logged-in Chromium browser.', zhName: '浏览器自动化', zhDescription: '操作用户已登录的 Chromium 浏览器。' },
+  { id: 'appkit-interop', name: 'AppKit Interop', description: 'SwiftUI/AppKit bridging, NSWindow, responder chain.' },
+  { id: 'swiftui-patterns', name: 'SwiftUI Patterns', description: 'macOS SwiftUI scenes, windows, toolbars, inspectors.' },
+  { id: 'window-management', name: 'Window Management', description: 'macOS windows, panels, placement and restoration.' },
+  { id: 'liquid-glass', name: 'Liquid Glass', description: 'macOS 26 Liquid Glass surfaces and glass controls.' },
+  { id: 'view-refactor', name: 'View Refactor', description: 'Split large SwiftUI views and stabilize scene state.' },
+  { id: 'build-run-debug', name: 'Build Run Debug', description: 'Xcode/Swift build, launch, and runtime failures.' },
+  { id: 'test-triage', name: 'Test Triage', description: 'Narrow macOS test failures and separate setup issues.' },
+  { id: 'swiftpm-macos', name: 'SwiftPM macOS', description: 'SwiftPM macOS packages and executables.' },
+  { id: 'signing-entitlements', name: 'Signing Entitlements', description: 'macOS signing, entitlements, and Gatekeeper.' },
+  { id: 'packaging-notarization', name: 'Packaging Notarization', description: 'Archiving, notarization, and distribution failures.' },
+  { id: 'telemetry', name: 'Telemetry', description: 'Lightweight macOS runtime logging and events.' },
+  { id: 'reverse-engineering-unpacking', name: 'RE Unpacking', description: 'PE/.NET, APK, and native ELF/SO triage and unpacking.' },
+  { id: 'kuna-decompiler', name: 'Kuna Decompiler', description: 'Recover searchable C and assembly with the Kuna CLI.' },
+  { id: 'reverse-engineer-anything', name: 'REA', description: 'Reverse engineer native, managed, Electron and firmware targets.' },
+  { id: 'cloudflare', name: 'Cloudflare', description: 'Choose Cloudflare products and architecture.' },
+  { id: 'workers-best-practices', name: 'Workers Best Practices', description: 'Production Workers configuration and code practices.' },
+  { id: 'wrangler', name: 'Wrangler', description: 'Wrangler CLI dev, deploy, and resources.' },
+  { id: 'yichen-jianying-edit', name: 'Jianying Edit', description: 'Headless editable Jianying drafts and export.' },
+  { id: 'browser-skill', name: 'Browser Skill', description: 'Automate the logged-in Chromium browser.' },
 ];
-
-const translations = {
-  version: 1,
-  locale: 'zh-CN',
-  entries: Object.fromEntries(
-    fixtures.map((item) => [
-      item.id,
-      { hash: `${item.id}-hash`, nameZh: item.zhName, descriptionZh: item.zhDescription, updatedAt: 1 },
-    ]),
-  ),
-};
-translations.entries.delta = { hash: 'delta-hash', nameZh: '德尔塔', descriptionZh: '启用和停用入口同时存在的示例技能。', updatedAt: 1 };
 
 const defaultGroups = [
   { id: 'macos-ui', name: 'macOS UI', skillIds: ['appkit-interop', 'swiftui-patterns', 'window-management', 'liquid-glass', 'view-refactor'] },
-  { id: 'macos-build', name: 'macOS 构建', skillIds: ['build-run-debug', 'test-triage', 'swiftpm-macos', 'signing-entitlements', 'packaging-notarization', 'telemetry'] },
-  { id: 'reverse', name: '逆向工程', skillIds: ['reverse-engineering-unpacking', 'kuna-decompiler', 'reverse-engineer-anything'] },
+  { id: 'macos-build', name: 'macOS Build', skillIds: ['build-run-debug', 'test-triage', 'swiftpm-macos', 'signing-entitlements', 'packaging-notarization', 'telemetry'] },
+  { id: 'reverse', name: 'Reverse Engineering', skillIds: ['reverse-engineering-unpacking', 'kuna-decompiler', 'reverse-engineer-anything'] },
   { id: 'cloudflare', name: 'Cloudflare', skillIds: ['cloudflare', 'workers-best-practices', 'wrangler'] },
-  { id: 'video', name: '视频', skillIds: ['yichen-jianying-edit'] },
-  { id: 'browser', name: '浏览器', skillIds: ['browser-skill'] },
+  { id: 'video', name: 'Video', skillIds: ['yichen-jianying-edit'] },
+  { id: 'browser', name: 'Browser', skillIds: ['browser-skill'] },
 ];
 let groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
 
 const initialStates = () => {
   const states = Object.fromEntries(fixtures.map((item) => [item.id, true]));
   states['view-refactor'] = false;
+  states['local-notes'] = true;
+  states['project-review'] = false;
   states.delta = true;
   return states;
 };
@@ -115,10 +107,14 @@ const buildData = () => {
     const autoInvokeOff = item.id === 'browser-skill';
     const conflicts = [];
     if (active && autoInvokeOff) {
-      conflicts.push(conflict('manual', item.id, '入口已启用，但标记为仅手动调用；模型看不到它。', activePath, null, false));
+      conflicts.push(conflict('manual', item.id, 'The entry is enabled but marked for manual invocation only; the model cannot see it.', activePath, null, false));
     }
     skills.push({
+      key: `opencode-global:${item.id}`,
       id: item.id,
+      scope: 'global',
+      sourceId: 'opencode-global',
+      rootPath: root,
       name: item.name,
       description: item.description,
       state: active ? 'enabled' : 'disabled',
@@ -129,7 +125,32 @@ const buildData = () => {
       conflicts,
       warnings: conflicts.map((item) => item.message),
       estimatedTokens: active && !autoInvokeOff ? 40 : 0,
-      contentHash: `${item.id}-hash`,
+    });
+  }
+
+  for (const item of [
+    { id: 'local-notes', name: 'Local Notes', description: 'Project-only note workflow.' },
+    { id: 'project-review', name: 'Project Review', description: 'Review this project against its checklist.' },
+  ]) {
+    const active = Boolean(states[item.id]);
+    const activePath = active ? `${projectRoot}/${item.id}/SKILL.md` : null;
+    const disabledPath = active ? null : `${projectRoot}/${item.id}/SKILL.md.disabled`;
+    skills.push({
+      key: `opencode-project:${item.id}`,
+      id: item.id,
+      scope: 'project',
+      sourceId: 'opencode-project',
+      rootPath: projectRoot,
+      name: item.name,
+      description: item.description,
+      state: active ? 'enabled' : 'disabled',
+      advertised: active,
+      autoInvokeOff: false,
+      activePaths: activePath ? [activePath] : [],
+      disabledPaths: disabledPath ? [disabledPath] : [],
+      conflicts: [],
+      warnings: [],
+      estimatedTokens: active ? 30 : 0,
     });
   }
 
@@ -137,7 +158,11 @@ const buildData = () => {
     if (resolved) {
       const active = Boolean(states.delta);
       skills.push({
+        key: 'opencode-global:delta',
         id: 'delta',
+        scope: 'global',
+        sourceId: 'opencode-global',
+        rootPath: root,
         name: 'Delta',
         description: 'Conflict resolved for this preview.',
         state: active ? 'enabled' : 'disabled',
@@ -148,11 +173,14 @@ const buildData = () => {
         conflicts: [],
         warnings: [],
         estimatedTokens: active ? 30 : 0,
-        contentHash: 'delta-hash',
       });
     } else {
       skills.push({
+        key: 'opencode-global:delta',
         id: 'delta',
+        scope: 'global',
+        sourceId: 'opencode-global',
+        rootPath: root,
         name: 'Delta',
         description: 'Both the active and disabled entry exist.',
         state: 'conflict',
@@ -161,11 +189,10 @@ const buildData = () => {
         activePaths: [pathFor('delta')],
         disabledPaths: [pathFor('delta', 'SKILL.md.disabled')],
         conflicts: [
-          conflict('both', 'delta', '同一目录同时存在启用和停用入口，需要先选择保留哪一个。', pathFor('delta'), pathFor('delta', 'SKILL.md.disabled'), true),
+          conflict('both', 'delta', 'Both an enabled and a disabled entry exist in the same directory. Choose which one to keep first.', pathFor('delta'), pathFor('delta', 'SKILL.md.disabled'), true),
         ],
         warnings: [],
         estimatedTokens: 30,
-        contentHash: 'delta-hash',
       });
     }
   }
@@ -183,7 +210,12 @@ const buildData = () => {
       warnings: conflicts.length - blocking,
       estimatedTokens: skills.reduce((sum, skill) => sum + skill.estimatedTokens, 0),
     },
-    root: { path: root, exists: true, error: null },
+    root: { sourceId: 'opencode-global', scope: 'global', label: 'Global OpenCode', path: root, exists: true, error: null },
+    roots: [
+      { sourceId: 'opencode-global', scope: 'global', label: 'Global OpenCode', path: root, exists: true, error: null },
+      { sourceId: 'opencode-project', scope: 'project', label: 'Project OpenCode', path: projectRoot, exists: true, error: null },
+    ],
+    projectDirectory,
     scannedAt: Date.now(),
   };
 };
@@ -195,8 +227,8 @@ const ready = () => {
     type: 'ready',
     payload: {
       theme: { mode: dark ? 'dark' : 'light', tokens: tokens(dark) },
-      locale,
-      directory: null,
+      locale: 'en',
+      directory: projectDirectory,
       session: null,
       surface: 'panel',
       connection: { connected: true, account: 'fixture' },
@@ -221,73 +253,67 @@ window.addEventListener('message', (event) => {
     return;
   }
   const { method, path, body } = message.payload;
+  const route = path.split('?')[0];
   const data = buildData();
-  if (method === 'GET' && path === '/skills') {
+  if (method === 'GET' && route.startsWith('/skills')) {
     reply(event.source, message.id, 200, data);
     return;
   }
-  if (method === 'GET' && path === '/translations') {
-    reply(event.source, message.id, 200, translations);
-    return;
-  }
-  if (method === 'POST' && path === '/translations') {
-    reply(event.source, message.id, 200, translations);
-    return;
-  }
-  if (method === 'GET' && path === '/groups') {
+  if (method === 'GET' && route === '/groups') {
     reply(event.source, message.id, 200, { version: 1, groups });
     return;
   }
-  if (method === 'POST' && path === '/groups') {
+  if (method === 'POST' && route === '/groups') {
     const input = body ? JSON.parse(body) : {};
     if (!input || input.version !== 1 || !Array.isArray(input.groups)) {
-      reply(event.source, message.id, 400, { error: '分组配置格式不正确。', code: 'invalid-groups' });
+      reply(event.source, message.id, 400, { error: 'The group configuration format is invalid.', code: 'invalid-groups' });
       return;
     }
     groups = input.groups;
     reply(event.source, message.id, 200, { version: 1, groups });
     return;
   }
-  if (method === 'POST' && path === '/skills/toggle') {
+  if (method === 'POST' && route === '/skills/toggle') {
     const input = body ? JSON.parse(body) : {};
-    const skill = data.skills.find((item) => item.id === input.id);
+    const id = bareId(input.id);
+    const skill = data.skills.find((item) => item.id === id);
     if (!skill) {
-      reply(event.source, message.id, 404, { error: '没有找到技能', code: 'not-found' });
+      reply(event.source, message.id, 404, { error: 'Skill was not found.', code: 'not-found' });
       return;
     }
     if (skill.conflicts.some((item) => item.kind === 'both')) {
-      reply(event.source, message.id, 409, { error: '技能有未解决的入口冲突。', code: 'conflict', conflicts: skill.conflicts });
+      reply(event.source, message.id, 409, { error: 'This skill has unresolved entry conflicts.', code: 'conflict', conflicts: skill.conflicts });
       return;
     }
-    states[input.id] = Boolean(input.enabled);
-    if (input.id === 'delta') resolved = true;
+    states[id] = Boolean(input.enabled);
+    if (id === 'delta') resolved = true;
     reply(event.source, message.id, 200, buildData());
     return;
   }
-  if (method === 'POST' && path === '/skills/resolve') {
+  if (method === 'POST' && route === '/skills/resolve') {
     const input = body ? JSON.parse(body) : {};
     resolved = true;
     states.delta = input.keep === 'enabled';
     reply(event.source, message.id, 200, {
       ...buildData(),
-      backupPath: '~/.config/opencode/skills/delta/SKILL.md.disabled.conflict-fixture',
+      backupPath: `${root}/delta/SKILL.md.disabled.conflict-fixture`,
     });
     return;
   }
-  if (method === 'POST' && path === '/skills/bulk') {
+  if (method === 'POST' && route === '/skills/bulk') {
     const input = body ? JSON.parse(body) : {};
-    const ids = buildData().skills.map((skill) => skill.id);
-    for (const id of ids) states[id] = Boolean(input.enabled);
+    const ids = buildData().skills.map((skill) => skill.key);
+    for (const id of ids) states[bareId(id)] = Boolean(input.enabled);
     resolved = true;
     reply(event.source, message.id, 200, { ...buildData(), changed: ids });
     return;
   }
-  if (method === 'POST' && path === '/skills/batch') {
+  if (method === 'POST' && route === '/skills/batch') {
     const input = body ? JSON.parse(body) : {};
     const enable = Array.isArray(input.enable) ? input.enable : [];
     const disable = Array.isArray(input.disable) ? input.disable : [];
-    for (const id of enable) states[id] = true;
-    for (const id of disable) states[id] = false;
+    for (const id of enable) states[bareId(id)] = true;
+    for (const id of disable) states[bareId(id)] = false;
     resolved = true;
     reply(event.source, message.id, 200, { ...buildData(), changed: [...new Set([...enable, ...disable])] });
     return;
@@ -300,7 +326,7 @@ const paint = () => {
   document.documentElement.style.setProperty('--width', `${width}px`);
   buttons.clean.setAttribute('aria-pressed', mode === 'clean' ? 'true' : 'false');
   buttons.conflict.setAttribute('aria-pressed', mode === 'conflict' ? 'true' : 'false');
-  audit.textContent = `mode=${mode} · ${Object.values(states).filter(Boolean).length} 个启用`;
+  audit.textContent = `mode=${mode} · ${Object.values(states).filter(Boolean).length} enabled`;
 };
 const show = () => {
   frame.src = `/panel/index.html?state=${encodeURIComponent(mode)}&t=${Date.now()}`;
@@ -340,7 +366,7 @@ document.querySelector('#group').onclick = () => {
   doc?.querySelector('.oc-sdk-trigger')?.click();
   setTimeout(() => {
     const option = [...(doc?.querySelectorAll('.oc-sdk-option') ?? [])].find((node) =>
-      node.textContent?.includes('逆向工程'),
+      node.textContent?.includes('Reverse Engineering'),
     );
     option?.click();
   }, 50);
@@ -354,16 +380,16 @@ document.querySelector('#save-group').onclick = async () => {
   doc?.querySelector('.sk-groups-edit')?.click();
   await new Promise((resolve) => setTimeout(resolve, 80));
   const input = doc?.querySelector('.sk-group-name');
-  const save = doc ? [...doc.querySelectorAll('button')].find((button) => button.textContent === '保存更改') : null;
+  const save = doc ? [...doc.querySelectorAll('button')].find((button) => button.textContent === 'Save changes') : null;
   if (!input || !save) {
-    audit.textContent = '保存测试失败：找不到编辑器控件';
+    audit.textContent = 'Save test failed: editor controls not found';
     return;
   }
-  input.value = 'macOS UI 改';
+  input.value = 'macOS UI Edited';
   input.dispatchEvent(new Event('input', { bubbles: true }));
   save.click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  audit.textContent = `保存测试：${groups.map((group) => group.name).join(' / ')}`;
+  audit.textContent = `Save test: ${groups.map((group) => group.name).join(' / ')}`;
 };
 document.querySelector('#reload').onclick = show;
 

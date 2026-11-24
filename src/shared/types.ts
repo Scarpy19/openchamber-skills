@@ -1,5 +1,7 @@
 export type SkillState = 'enabled' | 'disabled' | 'mixed' | 'conflict';
 
+export type SkillScope = 'global' | 'project';
+
 export type ConflictKind =
   | 'both'
   | 'duplicate'
@@ -10,6 +12,9 @@ export type ConflictKind =
   | 'no-description';
 
 export type RootView = {
+  sourceId: string;
+  scope: SkillScope;
+  label: string;
   path: string;
   exists: boolean;
   error: string | null;
@@ -25,7 +30,11 @@ export type ConflictView = {
 };
 
 export type SkillView = {
+  key: string;
   id: string;
+  scope: SkillScope;
+  sourceId: string;
+  rootPath: string;
   name: string;
   description: string;
   state: SkillState;
@@ -36,7 +45,6 @@ export type SkillView = {
   conflicts: ConflictView[];
   warnings: string[];
   estimatedTokens: number;
-  contentHash: string;
 };
 
 export type Summary = {
@@ -53,24 +61,13 @@ export type SkillsResponse = {
   conflicts: ConflictView[];
   summary: Summary;
   root: RootView;
+  roots: RootView[];
+  projectDirectory: string | null;
   scannedAt: number;
 };
 
 export type BulkResponse = SkillsResponse & {
   changed: string[];
-};
-
-export type TranslationEntry = {
-  hash: string;
-  nameZh: string;
-  descriptionZh: string;
-  updatedAt: number;
-};
-
-export type TranslationCache = {
-  version: 1;
-  locale: 'zh-CN';
-  entries: Record<string, TranslationEntry>;
 };
 
 export type BatchResponse = SkillsResponse & {

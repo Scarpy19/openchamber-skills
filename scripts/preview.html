@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="data:," />
-    <title>技能开关 · 扩展预览</title>
+    <title>Skills Manager · Extension Preview</title>
     <style>
       * { box-sizing: border-box; }
       body { margin: 0; background: #eeedeb; color: #484744; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -23,18 +23,18 @@
   </head>
   <body>
     <header>
-      <span>合成数据预览 · 不读取真实技能</span>
-      <button id="theme">切换主题</button>
-      <button id="narrow">切换宽度</button>
-      <button id="clean" aria-pressed="true">正常</button>
-      <button id="conflict">入口冲突</button>
-      <button id="group">逆向分组</button>
-      <button id="edit-groups">编辑分组</button>
-      <button id="save-group">测试改名保存</button>
-      <button id="reload">重新加载</button>
+      <span>Synthetic preview · no real skills are read</span>
+      <button id="theme">Toggle theme</button>
+      <button id="narrow">Toggle width</button>
+      <button id="clean" aria-pressed="true">Normal</button>
+      <button id="conflict">Entry conflict</button>
+      <button id="group">Reverse group</button>
+      <button id="edit-groups">Edit groups</button>
+      <button id="save-group">Test rename save</button>
+      <button id="reload">Reload</button>
     </header>
     <output id="audit" aria-live="polite"></output>
-    <div class="shell"><div class="caption">技能开关</div><iframe title="技能开关扩展"></iframe></div>
+    <div class="shell"><div class="caption">Skills Manager</div><iframe title="Skills Manager extension"></iframe></div>
     <script type="module" src="/preview.js"></script>
   </body>
 </html>

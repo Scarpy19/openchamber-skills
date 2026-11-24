@@ -1,9 +1,9 @@
 {
   "name": "openchamber-skills",
-  "version": "0.4.1",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "OpenChamber 技能开关：启停 OpenCode 技能、中文翻译和联动分组。",
+  "description": "Skills Manager for OpenChamber: toggle OpenCode skills, resolve entry conflicts, and manage reusable groups.",
   "openchamber": {
     "apiVersion": 1,
     "engines": {
@@ -12,7 +12,7 @@
     "contributes": {
       "panel": {
         "id": "skills-manager",
-        "name": "技能开关",
+        "name": "Skills Manager",
         "icon": "list-check-2",
         "entry": "panel/index.html"
       },
@@ -20,11 +20,11 @@
         "entry": "service/main.js",
         "runtime": "host",
         "permissions": {}
-      },
-      "capabilities": [
-        "model"
-      ]
+      }
     }
+  },
+  "engines": {
+    "node": ">=22.6.0"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -32,7 +32,7 @@
     "preview": "node scripts/preview.mjs",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "node --experimental-strip-types --test tests/*.test.*"
+    "test": "node --experimental-strip-types --test \"tests/*.test.*\""
   },
   "devDependencies": {
     "@openchamber/sdk": "^2.7.2",

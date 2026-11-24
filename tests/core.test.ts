@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -16,9 +16,15 @@ import {
 const skillText = (name: string, description: string, extra = ''): string =>
   `---\nname: ${name}\ndescription: ${description}\n${extra}---\n\nBody for ${name}.\n`;
 
-const home = async (): Promise<string> => {
+const home = async (t: TestContext): Promise<string> => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'skills-core-'));
   await mkdir(path.join(directory, '.config/opencode/skills'), { recursive: true });
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = path.join(directory, '.config');
+  t.after(() => {
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+  });
   return directory;
 };
 
@@ -77,10 +83,18 @@ test('frontmatter reads names, descriptions, autoinvoke and malformed blocks', (
   assert.equal(noFrontmatter.hasFrontmatter, false);
   assert.equal(noFrontmatter.valid, true);
   assert.equal(noFrontmatter.description, '');
+
+  const commented = parseFrontmatter('---\r\nname: "Quoted # name"\r\ndescription: Plain text # ignored note\r\n---\r\nbody', 'commented');
+  assert.equal(commented.name, 'Quoted # name');
+  assert.equal(commented.description, 'Plain text');
+
+  const bom = parseFrontmatter('\uFEFF---\nname: Bom\ndescription: Handles a byte-order mark\n---\nbody', 'bom');
+  assert.equal(bom.name, 'Bom');
+  assert.equal(bom.description, 'Handles a byte-order mark');
 });
 
-test('scan reads only the OpenCode directory and reports entry conflicts', async (t) => {
-  const directory = await home();
+test('scan reads all global skill roots and reports entry conflicts', async (t) => {
+  const directory = await home(t);
   t.after(() => rm(directory, { recursive: true, force: true }));
 
   await put(directory, 'alpha', skillText('Alpha', 'Alpha skill'));
@@ -107,7 +121,6 @@ test('scan reads only the OpenCode directory and reports entry conflicts', async
   const scan = await scanSkills(directory);
   const byId = new Map(scan.skills.map((skill) => [skill.id, skill]));
   assert.equal(byId.get('alpha')?.advertised, true);
-  assert.equal(byId.get('alpha')?.contentHash.length, 64);
   assert.equal(byId.get('beta')?.advertised, true);
   assert.equal(byId.get('team')?.advertised, true);
   assert.equal(byId.get('manual')?.advertised, false);
@@ -122,15 +135,66 @@ test('scan reads only the OpenCode directory and reports entry conflicts', async
   assert.equal(byId.get('manual-off')?.conflicts.some((conflict) => conflict.kind === 'manual'), false);
   assert.equal(byId.get('nodesc-off')?.state, 'disabled');
   assert.equal(byId.get('nodesc-off')?.conflicts.some((conflict) => conflict.kind === 'no-description'), false);
-  assert.equal(byId.has('other'), false);
+  assert.equal(byId.get('other')?.scope, 'global');
+  assert.equal(byId.get('other')?.sourceId, 'claude-global');
+  assert.equal(byId.get('alpha')?.key, 'opencode-global:alpha');
   assert.equal(scan.root.path, rootPath(directory));
   assert.equal(scan.root.exists, true);
   assert.equal(scan.root.error, null);
+  assert.equal(scan.roots.length, 3);
   assert.ok(scan.summary.blockingConflicts >= 1);
 });
 
+test('project skills are discovered, identified and toggled without touching global copies', async (t) => {
+  const directory = await home(t);
+  const project = path.join(directory, 'workspace');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  await put(directory, 'alpha', skillText('Global Alpha', 'Global skill'));
+  const projectRoot = path.join(project, '.opencode/skills');
+  await mkdir(path.join(projectRoot, 'alpha'), { recursive: true });
+  const projectFile = path.join(projectRoot, 'alpha/SKILL.md');
+  await writeFile(projectFile, skillText('Project Alpha', 'Project skill'));
+  await writeFile(path.join(projectRoot, 'alpha.md'), skillText('Project Flat Alpha', 'Flat project skill'));
+  await mkdir(path.join(project, '.claude/skills/beta'), { recursive: true });
+  const betaFile = path.join(project, '.claude/skills/beta/SKILL.md');
+  await writeFile(betaFile, skillText('Beta', 'Claude-compatible project skill'));
+
+  const config = { home: directory, projectDirectory: project };
+  const scan = await scanSkills(config);
+  const global = scan.skills.find((skill) => skill.key === 'opencode-global:alpha');
+  const local = scan.skills.find((skill) => skill.key === 'opencode-project:alpha');
+  const claudeProject = scan.skills.find((skill) => skill.key === 'claude-project:beta');
+  assert.equal(global?.scope, 'global');
+  assert.equal(local?.scope, 'project');
+  assert.equal(local?.rootPath, projectRoot);
+  assert.equal(claudeProject?.advertised, true);
+  assert.equal(scan.projectDirectory, project);
+  assert.equal(scan.roots.length, 6);
+
+  const duplicate = scan.conflicts.find((conflict) => conflict.kind === 'duplicate' && conflict.skillId === 'opencode-project:alpha');
+  assert.ok(duplicate);
+  assert.equal(duplicate?.activePath, path.join(projectRoot, 'alpha/SKILL.md'));
+
+  const off = await setSkillEnabled(config, local?.key ?? 'missing', false);
+  assert.equal(await exists(projectFile), false);
+  assert.equal(await exists(`${projectFile}.disabled`), true);
+  assert.equal(await exists(path.join(rootPath(directory), 'alpha/SKILL.md')), true);
+  assert.equal(off.skills.find((skill) => skill.key === 'opencode-project:alpha')?.state, 'disabled');
+  assert.equal(off.skills.find((skill) => skill.key === 'opencode-global:alpha')?.state, 'enabled');
+
+  const on = await setSkillEnabled(config, local?.key ?? 'missing', true);
+  assert.equal(await exists(projectFile), true);
+  assert.equal(on.skills.find((skill) => skill.key === 'opencode-project:alpha')?.state, 'enabled');
+
+  await assert.rejects(
+    setSkillEnabled(config, 'alpha', false),
+    (error: unknown) => error instanceof SkillsError && error.code === 'ambiguous',
+  );
+});
+
 test('toggles entry documents, all duplicate copies, and restores them', async (t) => {
-  const directory = await home();
+  const directory = await home(t);
   t.after(() => rm(directory, { recursive: true, force: true }));
 
   const alpha = await put(directory, 'alpha', skillText('Alpha', 'Alpha skill'));
@@ -165,7 +229,7 @@ test('toggles entry documents, all duplicate copies, and restores them', async (
 });
 
 test('resolves active/disabled conflicts without losing either document', async (t) => {
-  const directory = await home();
+  const directory = await home(t);
   t.after(() => rm(directory, { recursive: true, force: true }));
 
   const delta = await put(directory, 'delta', skillText('Delta', 'Delta skill'));
@@ -201,13 +265,18 @@ test('resolves active/disabled conflicts without losing either document', async 
 
 test('an unreadable root blocks every rename path', async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'skills-root-error-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = path.join(directory, '.config');
+  t.after(() => {
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+  });
   await mkdir(path.join(directory, '.config/opencode'), { recursive: true });
   await writeFile(path.join(directory, '.config/opencode/skills'), 'not a directory');
 
   const scan = await scanSkills(directory);
   assert.equal(scan.root.exists, false);
-  assert.equal(scan.root.error, '不是目录');
+  assert.equal(scan.root.error, 'Not a directory');
   await setSkillEnabled(directory, 'alpha', false).then(
     () => assert.fail('a read error must block a single toggle'),
     (error: unknown) => assert.equal(error instanceof SkillsError && error.code, 'read-error'),
@@ -222,8 +291,33 @@ test('an unreadable root blocks every rename path', async (t) => {
   );
 });
 
+test('an unreadable project root blocks writes to otherwise valid global skills', async (t) => {
+  const directory = await home(t);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await put(directory, 'alpha', skillText('Alpha', 'Alpha skill'));
+
+  const project = path.join(directory, 'workspace');
+  await mkdir(path.join(project, '.opencode'), { recursive: true });
+  await writeFile(path.join(project, '.opencode/skills'), 'not a directory');
+  const config = { home: directory, projectDirectory: project };
+
+  const scan = await scanSkills(config);
+  const projectRoot = scan.roots.find((root) => root.sourceId === 'opencode-project');
+  assert.equal(projectRoot?.exists, false);
+  assert.equal(projectRoot?.error, 'Not a directory');
+
+  await setSkillEnabled(config, 'opencode-global:alpha', false).then(
+    () => assert.fail('a project read error must block a global toggle'),
+    (error: unknown) => assert.equal(error instanceof SkillsError && error.code, 'read-error'),
+  );
+  await bulkSetEnabled(config, false).then(
+    () => assert.fail('a project read error must block a bulk toggle'),
+    (error: unknown) => assert.equal(error instanceof SkillsError && error.code, 'read-error'),
+  );
+});
+
 test('bulk operations cover the OpenCode directory', async (t) => {
-  const directory = await home();
+  const directory = await home(t);
   t.after(() => rm(directory, { recursive: true, force: true }));
 
   const alpha = await put(directory, 'alpha', skillText('Alpha', 'Alpha skill'));
@@ -231,8 +325,8 @@ test('bulk operations cover the OpenCode directory', async (t) => {
   await writeFile(beta, skillText('Beta', 'Flat skill'));
 
   const off = await bulkSetEnabled(directory, false);
-  assert.ok(off.changed.includes('alpha'));
-  assert.ok(off.changed.includes('beta'));
+  assert.ok(off.changed.includes('opencode-global:alpha'));
+  assert.ok(off.changed.includes('opencode-global:beta'));
   assert.equal(await exists(`${alpha}.disabled`), true);
   assert.equal(await exists(`${beta}.disabled`), true);
   let scan = await scanSkills(directory);
@@ -240,19 +334,19 @@ test('bulk operations cover the OpenCode directory', async (t) => {
   assert.equal(scan.skills.find((skill) => skill.id === 'beta')?.state, 'disabled');
 
   const on = await bulkSetEnabled(directory, true);
-  assert.ok(on.changed.includes('alpha'));
+  assert.ok(on.changed.includes('opencode-global:alpha'));
   assert.equal(await exists(alpha), true);
   assert.equal(await exists(beta), true);
   scan = await scanSkills(directory);
   assert.equal(scan.skills.find((skill) => skill.id === 'alpha')?.state, 'enabled');
   assert.equal(scan.summary.disabled, 0);
 
-  const groupOff = await batchSetEnabled(directory, [], ['alpha', 'beta']);
-  assert.deepEqual(groupOff.changed.sort(), ['alpha', 'beta']);
+  const groupOff = await batchSetEnabled(directory, [], ['opencode-global:alpha', 'opencode-global:beta']);
+  assert.deepEqual(groupOff.changed.sort(), ['opencode-global:alpha', 'opencode-global:beta']);
   assert.equal(await exists(`${alpha}.disabled`), true);
   assert.equal(await exists(`${beta}.disabled`), true);
-  const groupOn = await batchSetEnabled(directory, ['alpha', 'beta'], []);
-  assert.deepEqual(groupOn.changed.sort(), ['alpha', 'beta']);
+  const groupOn = await batchSetEnabled(directory, ['opencode-global:alpha', 'opencode-global:beta'], []);
+  assert.deepEqual(groupOn.changed.sort(), ['opencode-global:alpha', 'opencode-global:beta']);
   assert.equal(await exists(alpha), true);
   assert.equal(await exists(beta), true);
 });

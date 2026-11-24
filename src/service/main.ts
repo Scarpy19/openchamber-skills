@@ -8,8 +8,8 @@ import {
   scanSkills,
   setSkillEnabled,
 } from '../core/skills.ts';
-import { TranslationError, readTranslations, writeTranslations } from '../core/translations.ts';
 import { GroupError, readGroups, writeGroups } from '../core/groups.ts';
+import { normalizeProjectDirectory, type ScanConfig } from '../core/sources.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -19,6 +19,7 @@ if (!port || !token) {
 }
 
 const HOME = os.homedir();
+const DATA_DIR = process.env.OPENCHAMBER_SERVICE_DATA_DIR || undefined;
 
 const json = (res: http.ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, {
@@ -39,12 +40,12 @@ const readBody = (req: http.IncomingMessage): Promise<Record<string, unknown>> =
       if (size > 256 * 1024) {
         failed = true;
         chunks.length = 0;
-        reject(new SkillsError('too-large', 413, '提交内容过大'));
+        reject(new SkillsError('too-large', 413, 'The submitted content is too large.'));
         return;
       }
       chunks.push(chunk);
     });
-    req.on('error', () => reject(new SkillsError('invalid-request', 400, '请求中断，请重试')));
+    req.on('error', () => reject(new SkillsError('invalid-request', 400, 'The request was interrupted. Try again.')));
     req.on('end', () => {
       if (failed) return;
       try {
@@ -54,7 +55,7 @@ const readBody = (req: http.IncomingMessage): Promise<Record<string, unknown>> =
         }
         resolve(parsed as Record<string, unknown>);
       } catch {
-        reject(new SkillsError('invalid-request', 400, '请求内容必须是有效的 JSON 对象'));
+        reject(new SkillsError('invalid-request', 400, 'The request body must be a valid JSON object.'));
       }
     });
   });
@@ -68,25 +69,37 @@ const exclusive = <T>(action: () => Promise<T>): Promise<T> => {
 
 const stringField = (body: Record<string, unknown>, key: string, max: number): string => {
   const value = typeof body[key] === 'string' ? body[key].trim() : '';
-  if (!value) throw new SkillsError('invalid-request', 400, `缺少 ${key}`);
-  if (value.length > max) throw new SkillsError('invalid-request', 400, `${key} 长度超出限制`);
+  if (!value) throw new SkillsError('invalid-request', 400, `Missing ${key}.`);
+  if (value.length > max) throw new SkillsError('invalid-request', 400, `${key} exceeds the length limit.`);
+  return value;
+};
+
+/** Unlike other fields, paths must keep their exact bytes (spaces matter on Windows). */
+const pathField = (body: Record<string, unknown>, key: string, max: number): string => {
+  const value = typeof body[key] === 'string' ? body[key] : '';
+  if (!value || value.length > max) throw new SkillsError('invalid-request', 400, `Missing ${key}.`);
   return value;
 };
 
 const booleanField = (body: Record<string, unknown>, key: string): boolean => {
   const value = body[key];
-  if (typeof value !== 'boolean') throw new SkillsError('invalid-request', 400, `${key} 必须是布尔值`);
+  if (typeof value !== 'boolean') throw new SkillsError('invalid-request', 400, `${key} must be a boolean.`);
   return value;
 };
 
 const stringArrayField = (body: Record<string, unknown>, key: string): string[] => {
   const value = body[key];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0 || item.length > 128)) {
-    throw new SkillsError('invalid-request', 400, `${key} 必须是技能 ID 数组`);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0 || item.length > 256)) {
+    throw new SkillsError('invalid-request', 400, `${key} must be an array of skill IDs.`);
   }
-  if (value.length > 200) throw new SkillsError('invalid-request', 400, `${key} 条目过多`);
+  if (value.length > 200) throw new SkillsError('invalid-request', 400, `Too many ${key} entries.`);
   return value as string[];
 };
+
+const scanFor = (directory: unknown): ScanConfig => ({
+  home: HOME,
+  projectDirectory: normalizeProjectDirectory(directory),
+});
 
 const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
   if (req.headers.authorization !== `Bearer ${token}`) {
@@ -98,53 +111,49 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
   if (url.pathname === '/skills' && req.method === 'GET') {
-    json(res, 200, await exclusive(() => scanSkills(HOME)));
+    const config = scanFor(url.searchParams.get('directory'));
+    json(res, 200, await exclusive(() => scanSkills(config)));
     return;
   }
   if (url.pathname === '/skills/toggle' && req.method === 'POST') {
     const body = await readBody(req);
-    const id = stringField(body, 'id', 128);
+    const id = stringField(body, 'id', 256);
     const enabled = booleanField(body, 'enabled');
-    json(res, 200, await exclusive(() => setSkillEnabled(HOME, id, enabled)));
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => setSkillEnabled(config, id, enabled)));
     return;
   }
   if (url.pathname === '/skills/bulk' && req.method === 'POST') {
     const body = await readBody(req);
     const enabled = booleanField(body, 'enabled');
-    json(res, 200, await exclusive(() => bulkSetEnabled(HOME, enabled)));
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => bulkSetEnabled(config, enabled)));
     return;
   }
   if (url.pathname === '/skills/batch' && req.method === 'POST') {
     const body = await readBody(req);
     const enable = stringArrayField(body, 'enable');
     const disable = stringArrayField(body, 'disable');
-    json(res, 200, await exclusive(() => batchSetEnabled(HOME, enable, disable)));
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => batchSetEnabled(config, enable, disable)));
     return;
   }
   if (url.pathname === '/groups' && req.method === 'GET') {
-    json(res, 200, await exclusive(() => readGroups(HOME)));
+    json(res, 200, await exclusive(() => readGroups(HOME, DATA_DIR)));
     return;
   }
   if (url.pathname === '/groups' && req.method === 'POST') {
     const body = await readBody(req);
-    json(res, 200, await exclusive(() => writeGroups(HOME, body)));
-    return;
-  }
-  if (url.pathname === '/translations' && req.method === 'GET') {
-    json(res, 200, await exclusive(() => readTranslations(HOME)));
-    return;
-  }
-  if (url.pathname === '/translations' && req.method === 'POST') {
-    const body = await readBody(req);
-    json(res, 200, await exclusive(() => writeTranslations(HOME, body)));
+    json(res, 200, await exclusive(() => writeGroups(HOME, body, DATA_DIR)));
     return;
   }
   if (url.pathname === '/skills/resolve' && req.method === 'POST') {
     const body = await readBody(req);
-    const entryPath = stringField(body, 'path', 4096);
+    const entryPath = pathField(body, 'path', 4096);
     const keep = body.keep === 'enabled' || body.keep === 'disabled' ? body.keep : null;
-    if (!keep) throw new SkillsError('invalid-request', 400, 'keep 必须是 enabled 或 disabled');
-    json(res, 200, await exclusive(() => resolveBoth(HOME, entryPath, keep)));
+    if (!keep) throw new SkillsError('invalid-request', 400, 'keep must be enabled or disabled.');
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => resolveBoth(config, entryPath, keep)));
     return;
   }
   throw new SkillsError('not-found', 404, 'not-found');
@@ -153,7 +162,7 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
 const server = http.createServer((req, res) => {
   void handle(req, res).catch((error: unknown) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError || error instanceof TranslationError || error instanceof GroupError) {
+    if (error instanceof SkillsError || error instanceof GroupError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,
@@ -162,7 +171,7 @@ const server = http.createServer((req, res) => {
       return;
     }
     console.error('skills service:', error instanceof Error ? error.message : error);
-    json(res, 500, { error: '本地服务处理失败，请重试', code: 'internal' });
+    json(res, 500, { error: 'The local service failed to process the request. Try again.', code: 'internal' });
   });
 });
 

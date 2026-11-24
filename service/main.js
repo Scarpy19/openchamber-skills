@@ -4,9 +4,39 @@ import os from "node:os";
 
 // src/core/skills.ts
 import fs from "node:fs/promises";
+import path2 from "node:path";
+import { randomUUID } from "node:crypto";
+
+// src/core/sources.ts
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-var ROOT_DIR = [".config", "opencode", "skills"];
+var configHome = (home) => {
+  const override = process.env.XDG_CONFIG_HOME;
+  return override && path.isAbsolute(override) ? override : path.join(home, ".config");
+};
+var normalizeProjectDirectory = (value) => {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 4096 || !path.isAbsolute(text)) return null;
+  return path.resolve(text);
+};
+var resolveSources = ({ home, projectDirectory }) => {
+  const config = configHome(home);
+  const global = [
+    { id: "opencode-global", scope: "global", label: "Global OpenCode", path: path.join(config, "opencode", "skills"), priority: 30 },
+    { id: "claude-global", scope: "global", label: "Global Claude-compatible", path: path.join(home, ".claude", "skills"), priority: 20 },
+    { id: "agents-global", scope: "global", label: "Global agent-compatible", path: path.join(home, ".agents", "skills"), priority: 10 }
+  ];
+  if (!projectDirectory) return global;
+  return [
+    ...global,
+    { id: "opencode-project", scope: "project", label: "Project OpenCode", path: path.join(projectDirectory, ".opencode", "skills"), priority: 60 },
+    { id: "claude-project", scope: "project", label: "Project Claude-compatible", path: path.join(projectDirectory, ".claude", "skills"), priority: 50 },
+    { id: "agents-project", scope: "project", label: "Project agent-compatible", path: path.join(projectDirectory, ".agents", "skills"), priority: 40 }
+  ];
+};
+var scanConfig = (value) => typeof value === "string" ? { home: value } : value;
+
+// src/core/skills.ts
 var MAX_DEPTH = 6;
 var MAX_SKILL_BYTES = 2e6;
 var IGNORED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", ".svn", ".hg"]);
@@ -33,11 +63,14 @@ var SkillsError = class extends Error {
 };
 var describeFs = (error) => {
   const code = error.code;
-  if (code === "EACCES" || code === "EPERM") return "\u6743\u9650\u4E0D\u8DB3";
-  if (code === "ENOENT") return "\u8DEF\u5F84\u4E0D\u5B58\u5728";
-  if (code === "ENOTDIR") return "\u4E0D\u662F\u76EE\u5F55";
-  if (code === "EISDIR") return "\u662F\u76EE\u5F55";
-  return error instanceof Error ? error.message : "\u6587\u4EF6\u7CFB\u7EDF\u9519\u8BEF";
+  if (code === "EBUSY" || code === "EPERM") {
+    return "The file is locked or permission was denied. Close it in other applications and rescan.";
+  }
+  if (code === "EACCES") return "Permission denied";
+  if (code === "ENOENT") return "Path does not exist";
+  if (code === "ENOTDIR") return "Not a directory";
+  if (code === "EISDIR") return "Is a directory";
+  return error instanceof Error ? error.message : "File system error";
 };
 var parseBoolean = (value) => {
   const text = value.trim().toLowerCase();
@@ -54,6 +87,20 @@ var unquote = (value) => {
     return text.slice(1, -1).replace(/''/g, "'");
   }
   return text;
+};
+var stripComment = (value) => {
+  let quote = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    if (quote) {
+      if (char === quote && value[index - 1] !== "\\") quote = null;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "#" && (index === 0 || /\s/.test(value[index - 1] ?? ""))) {
+      return value.slice(0, index).trimEnd();
+    }
+  }
+  return value;
 };
 var fallbackFrontmatter = (id) => ({
   name: id,
@@ -92,7 +139,7 @@ var parseFrontmatter = (text, id) => {
     const match = /^([^:]+):\s*(.*)$/.exec(line);
     if (!match) continue;
     const key = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
-    const raw = (match[2] ?? "").trim();
+    const raw = stripComment((match[2] ?? "").trim());
     if (key === "name" || key === "description") {
       let value = raw;
       if (/^[>|][+-]?$/.test(value)) {
@@ -146,14 +193,27 @@ var parseFrontmatter = (text, id) => {
     empty: false
   };
 };
-var rootView = async (home) => {
-  const root = path.join(home, ...ROOT_DIR);
+var rootView = async (source) => {
   try {
-    const info = await fs.stat(root);
-    return { path: root, exists: info.isDirectory(), error: info.isDirectory() ? null : "\u4E0D\u662F\u76EE\u5F55" };
+    const info = await fs.stat(source.path);
+    return {
+      sourceId: source.id,
+      scope: source.scope,
+      label: source.label,
+      path: source.path,
+      exists: info.isDirectory(),
+      error: info.isDirectory() ? null : "Not a directory"
+    };
   } catch (error) {
     const code = error.code;
-    return { path: root, exists: false, error: code === "ENOENT" ? null : describeFs(error) };
+    return {
+      sourceId: source.id,
+      scope: source.scope,
+      label: source.label,
+      path: source.path,
+      exists: false,
+      error: code === "ENOENT" ? null : describeFs(error)
+    };
   }
 };
 var classify = async (directory, entry) => {
@@ -161,7 +221,7 @@ var classify = async (directory, entry) => {
   if (entry.isDirectory()) return "dir";
   if (!entry.isSymbolicLink()) return "other";
   try {
-    const info = await fs.stat(path.join(directory, entry.name));
+    const info = await fs.stat(path2.join(directory, entry.name));
     return info.isFile() ? "file" : info.isDirectory() ? "dir" : "other";
   } catch {
     return "other";
@@ -172,10 +232,10 @@ var readFrontmatterFor = async (id, activePath, disabledPath) => {
   if (activePath) {
     try {
       const info = await fs.stat(activePath);
-      if (info.size > MAX_SKILL_BYTES) activeError = "\u5165\u53E3\u6587\u4EF6\u8D85\u8FC7 2 MB";
+      if (info.size > MAX_SKILL_BYTES) activeError = "The entry file exceeds 2 MB";
       else {
         const text = await fs.readFile(activePath, "utf8");
-        return { frontmatter: parseFrontmatter(text, id), error: null, hash: createHash("sha256").update(text).digest("hex") };
+        return { frontmatter: parseFrontmatter(text, id), error: null };
       }
     } catch (error) {
       activeError = describeFs(error);
@@ -185,22 +245,22 @@ var readFrontmatterFor = async (id, activePath, disabledPath) => {
     try {
       const info = await fs.stat(disabledPath);
       if (info.size > MAX_SKILL_BYTES) {
-        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "\u505C\u7528\u5165\u53E3\u8D85\u8FC7 2 MB", hash: "" };
+        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "The disabled entry exceeds 2 MB" };
       }
       const text = await fs.readFile(disabledPath, "utf8");
-      return { frontmatter: parseFrontmatter(text, id), error: activeError, hash: createHash("sha256").update(text).digest("hex") };
+      return { frontmatter: parseFrontmatter(text, id), error: activeError };
     } catch (error) {
-      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error), hash: "" };
+      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error) };
     }
   }
-  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "\u65E0\u6CD5\u8BFB\u53D6\u5165\u53E3\u6587\u4EF6", hash: "" };
+  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "Could not read the entry file" };
 };
-var scanDirectory = async (root, directory, depth, entries, visited) => {
+var scanDirectory = async (root, source, directory, depth, entries, visited) => {
   let dirents;
   try {
     dirents = await fs.readdir(directory, { withFileTypes: true });
   } catch (error) {
-    if (!root.error) root.error = `\u65E0\u6CD5\u8BFB\u53D6 ${directory}\uFF1A${describeFs(error)}`;
+    if (!root.error) root.error = `Could not read ${directory}: ${describeFs(error)}`;
     return;
   }
   const visible = dirents.filter((entry) => !entry.name.startsWith(".") && !IGNORED_DIRS.has(entry.name));
@@ -208,11 +268,11 @@ var scanDirectory = async (root, directory, depth, entries, visited) => {
   const active = classified.find((item) => item.kind === "file" && item.entry.name === "SKILL.md");
   const disabled = classified.find((item) => item.kind === "file" && item.entry.name === "SKILL.md.disabled");
   if (active || disabled) {
-    const id = path.basename(directory);
-    const activePath = active ? path.join(directory, "SKILL.md") : null;
-    const disabledPath = disabled ? path.join(directory, "SKILL.md.disabled") : null;
-    const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
-    entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
+    const id = path2.basename(directory);
+    const activePath = active ? path2.join(directory, "SKILL.md") : null;
+    const disabledPath = disabled ? path2.join(directory, "SKILL.md.disabled") : null;
+    const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
+    entries.push({ id, source, activePath, disabledPath, frontmatter, error });
     if (active) return;
   }
   if (depth === 0) {
@@ -226,17 +286,17 @@ var scanDirectory = async (root, directory, depth, entries, visited) => {
     for (const id of ids) {
       const activeItem = flat.find((item) => item.entry.name === `${id}.md`);
       const disabledItem = flat.find((item) => item.entry.name === `${id}.md.disabled`);
-      const activePath = activeItem ? path.join(directory, activeItem.entry.name) : null;
-      const disabledPath = disabledItem ? path.join(directory, disabledItem.entry.name) : null;
+      const activePath = activeItem ? path2.join(directory, activeItem.entry.name) : null;
+      const disabledPath = disabledItem ? path2.join(directory, disabledItem.entry.name) : null;
       if (!activePath && !disabledPath) continue;
-      const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
-      entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
+      const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
+      entries.push({ id, source, activePath, disabledPath, frontmatter, error });
     }
   }
   if (depth >= MAX_DEPTH) return;
   for (const item of classified) {
     if (item.kind !== "dir") continue;
-    const child = path.join(directory, item.entry.name);
+    const child = path2.join(directory, item.entry.name);
     let real = child;
     try {
       real = await fs.realpath(child);
@@ -244,7 +304,7 @@ var scanDirectory = async (root, directory, depth, entries, visited) => {
     }
     if (visited.has(real)) continue;
     visited.add(real);
-    await scanDirectory(root, child, depth + 1, entries, visited);
+    await scanDirectory(root, source, child, depth + 1, entries, visited);
   }
 };
 var addConflict = (conflicts, seen, conflict) => {
@@ -254,16 +314,22 @@ var addConflict = (conflicts, seen, conflict) => {
   conflicts.push(conflict);
 };
 var estimateTokens = (name, id, description) => Math.max(1, Math.ceil((name.length + id.length + description.length) / 4) + 8);
-var buildResponse = (root, entries) => {
+var compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+var buildResponse = (roots, entries, projectDirectory) => {
   const groups = /* @__PURE__ */ new Map();
   for (const entry of entries) {
-    const group = groups.get(entry.id);
+    const key = `${entry.source.id}:${entry.id}`;
+    const group = groups.get(key);
     if (group) group.push(entry);
-    else groups.set(entry.id, [entry]);
+    else groups.set(key, [entry]);
   }
   const skills = [];
-  for (const [id, group] of groups) {
-    group.sort((left, right) => (left.activePath ?? left.disabledPath ?? "").localeCompare(right.activePath ?? right.disabledPath ?? ""));
+  for (const [key, group] of groups) {
+    const id = group[0]?.id ?? key;
+    const source = group[0]?.source;
+    group.sort(
+      (left, right) => right.source.priority - left.source.priority || compareText(left.activePath ?? left.disabledPath ?? "", right.activePath ?? right.disabledPath ?? "")
+    );
     const active = group.filter((entry) => entry.activePath);
     const disabled = group.filter((entry) => entry.disabledPath);
     const loadable = active.filter((entry) => !entry.error && entry.frontmatter.valid && !entry.frontmatter.empty);
@@ -276,8 +342,8 @@ var buildResponse = (root, entries) => {
       if (entry.activePath && entry.disabledPath) {
         addConflict(conflicts2, seen, {
           kind: "both",
-          skillId: id,
-          message: "\u540C\u4E00\u76EE\u5F55\u540C\u65F6\u5B58\u5728\u542F\u7528\u548C\u505C\u7528\u5165\u53E3\uFF0C\u9700\u8981\u5148\u9009\u62E9\u4FDD\u7559\u54EA\u4E00\u4E2A\u3002",
+          skillId: key,
+          message: "Both an enabled and a disabled entry exist in the same directory. Choose which one to keep first.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: true
@@ -286,8 +352,8 @@ var buildResponse = (root, entries) => {
       if (entry.error) {
         addConflict(conflicts2, seen, {
           kind: "read-error",
-          skillId: id,
-          message: `\u65E0\u6CD5\u8BFB\u53D6\u5165\u53E3\uFF1A${entry.error}`,
+          skillId: key,
+          message: `Could not read the entry: ${entry.error}`,
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false
@@ -296,8 +362,8 @@ var buildResponse = (root, entries) => {
       if (!entry.frontmatter.valid) {
         addConflict(conflicts2, seen, {
           kind: "invalid",
-          skillId: id,
-          message: "frontmatter \u672A\u95ED\u5408\uFF0COpenCode \u53EF\u80FD\u8DF3\u8FC7\u6B64\u6280\u80FD\uFF1B\u5165\u53E3\u5F00\u5173\u4ECD\u53EF\u7528\u3002",
+          skillId: key,
+          message: "The frontmatter is not closed; OpenCode may skip this skill, but the entry switch still works.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false
@@ -306,8 +372,8 @@ var buildResponse = (root, entries) => {
       if (entry.frontmatter.empty) {
         addConflict(conflicts2, seen, {
           kind: "empty",
-          skillId: id,
-          message: "\u5165\u53E3\u6587\u4EF6\u4E3A\u7A7A\uFF0COpenCode \u4E0D\u4F1A\u52A0\u8F7D\u5B83\u3002",
+          skillId: key,
+          message: "The entry file is empty; OpenCode will not load it.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false
@@ -315,11 +381,11 @@ var buildResponse = (root, entries) => {
       }
     }
     if (group.length > 1) {
-      const winnerLabel = winner ? winner.activePath ?? winner.disabledPath ?? "\u672A\u77E5\u5165\u53E3" : "\u65E0\uFF08\u5165\u53E3\u4E0D\u53EF\u52A0\u8F7D\uFF09";
+      const winnerLabel = winner ? winner.activePath ?? winner.disabledPath ?? "Unknown entry" : "None (entry cannot be loaded)";
       addConflict(conflicts2, seen, {
         kind: "duplicate",
-        skillId: id,
-        message: `\u540C ID \u6709 ${group.length} \u4E2A\u5165\u53E3\uFF1B\u751F\u6548\u5165\u53E3\uFF1A${winnerLabel}\u3002`,
+        skillId: key,
+        message: `There are ${group.length} entries with this ID; the effective entry is ${winnerLabel}.`,
         activePath: winner?.activePath ?? null,
         disabledPath: winner?.disabledPath ?? null,
         blocking: false
@@ -328,8 +394,8 @@ var buildResponse = (root, entries) => {
     if (winner?.activePath && winner.frontmatter.autoInvokeOff) {
       addConflict(conflicts2, seen, {
         kind: "manual",
-        skillId: id,
-        message: "\u5165\u53E3\u5DF2\u542F\u7528\uFF0C\u4F46\u6807\u8BB0\u4E3A\u4EC5\u624B\u52A8\u8C03\u7528\uFF1B\u6A21\u578B\u770B\u4E0D\u5230\u5B83\u3002",
+        skillId: key,
+        message: "The entry is enabled but marked for manual invocation only; the model cannot see it.",
         activePath: winner.activePath,
         disabledPath: winner.disabledPath,
         blocking: false
@@ -338,8 +404,8 @@ var buildResponse = (root, entries) => {
     if (winner?.activePath && !winner.error && winner.frontmatter.valid && !winner.frontmatter.empty && !winner.frontmatter.description.trim()) {
       addConflict(conflicts2, seen, {
         kind: "no-description",
-        skillId: id,
-        message: "\u5165\u53E3\u5DF2\u542F\u7528\uFF0C\u4F46\u6CA1\u6709 description\uFF1B\u6A21\u578B\u4E0D\u4F1A\u81EA\u52A8\u9009\u7528\u3002",
+        skillId: key,
+        message: "The entry is enabled but has no description; the model will not select it automatically.",
         activePath: winner.activePath,
         disabledPath: winner.disabledPath,
         blocking: false
@@ -351,7 +417,11 @@ var buildResponse = (root, entries) => {
     const name = winner?.frontmatter.name || id;
     const description = winner?.frontmatter.description ?? "";
     skills.push({
+      key,
       id,
+      scope: source?.scope ?? "global",
+      sourceId: source?.id ?? "opencode-global",
+      rootPath: source?.path ?? "",
       name,
       description,
       state,
@@ -361,16 +431,15 @@ var buildResponse = (root, entries) => {
       disabledPaths: disabled.flatMap((entry) => entry.disabledPath ? [entry.disabledPath] : []),
       conflicts: conflicts2,
       warnings: Array.from(new Set(conflicts2.filter((conflict) => !conflict.blocking).map((conflict) => conflict.message))),
-      estimatedTokens: advertised ? estimateTokens(name, id, description) : 0,
-      contentHash: winner?.hash ?? group[0]?.hash ?? ""
+      estimatedTokens: advertised ? estimateTokens(name, id, description) : 0
     });
   }
-  skills.sort((left, right) => left.id.localeCompare(right.id));
+  skills.sort((left, right) => compareText(left.key, right.key));
   const conflicts = skills.flatMap((skill) => skill.conflicts);
   conflicts.sort((left, right) => {
     if (left.blocking !== right.blocking) return left.blocking ? -1 : 1;
     const kind = CONFLICT_ORDER[left.kind] - CONFLICT_ORDER[right.kind];
-    return kind !== 0 ? kind : left.skillId.localeCompare(right.skillId);
+    return kind !== 0 ? kind : compareText(left.skillId, right.skillId);
   });
   const summary = {
     total: skills.length,
@@ -380,21 +449,54 @@ var buildResponse = (root, entries) => {
     warnings: conflicts.filter((conflict) => !conflict.blocking).length,
     estimatedTokens: skills.reduce((sum, skill) => sum + skill.estimatedTokens, 0)
   };
-  return { skills, conflicts, summary, root, scannedAt: Date.now() };
+  return {
+    skills,
+    conflicts,
+    summary,
+    root: roots[0] ?? {
+      sourceId: "opencode-global",
+      scope: "global",
+      label: "Global OpenCode",
+      path: "",
+      exists: false,
+      error: null
+    },
+    roots,
+    projectDirectory,
+    scannedAt: Date.now()
+  };
 };
-var scanSkills = async (home) => {
-  const root = await rootView(home);
+var scanSkills = async (value) => {
+  const config = scanConfig(value);
+  const sources = resolveSources(config);
+  const roots = await Promise.all(sources.map((source) => rootView(source)));
   const entries = [];
-  if (root.exists) {
+  for (const [index, root] of roots.entries()) {
+    const source = sources[index];
+    if (!root.exists || !source) continue;
     const visited = /* @__PURE__ */ new Set();
     try {
       visited.add(await fs.realpath(root.path));
     } catch {
       visited.add(root.path);
     }
-    await scanDirectory(root, root.path, 0, entries, visited);
+    await scanDirectory(root, source, root.path, 0, entries, visited);
   }
-  return buildResponse(root, entries);
+  return buildResponse(roots, entries, config.projectDirectory ?? null);
+};
+var findSkill = (skills, idOrKey) => {
+  const exact = skills.find((skill) => skill.key === idOrKey);
+  if (exact) return exact;
+  const matches = skills.filter((skill) => skill.id === idOrKey);
+  if (matches.length === 1 && matches[0]) return matches[0];
+  if (matches.length > 1) {
+    throw new SkillsError(
+      "ambiguous",
+      400,
+      `Several sources have a skill named "${idOrKey}": ${matches.map((skill) => skill.key).join(", ")}.`
+    );
+  }
+  throw new SkillsError("not-found", 404, `Skill ${idOrKey} was not found.`);
 };
 var exists = async (file) => {
   try {
@@ -410,26 +512,26 @@ var applyMoves = async (moves) => {
   try {
     for (const move of moves) {
       if (await exists(move.to)) {
-        throw new SkillsError("conflict", 409, `\u76EE\u6807\u5165\u53E3\u5DF2\u5B58\u5728\uFF1A${move.to}`);
+        throw new SkillsError("conflict", 409, `The target entry already exists: ${move.to}`);
       }
       if (!await exists(move.from)) {
-        throw new SkillsError("conflict", 409, `\u5165\u53E3\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u626B\u63CF\uFF1A${move.from}`);
+        throw new SkillsError("conflict", 409, `The entry changed. Rescan: ${move.from}`);
       }
     }
   } catch (error) {
     if (error instanceof SkillsError) throw error;
-    throw new SkillsError("io", 500, `\u68C0\u67E5\u5165\u53E3\u5931\u8D25\uFF1A${describeFs(error)}`);
+    throw new SkillsError("io", 500, `Could not inspect the entry: ${describeFs(error)}`);
   }
   const done = [];
   try {
     for (const move of moves) {
       if (await exists(move.to)) {
-        throw new SkillsError("conflict", 409, `\u76EE\u6807\u5165\u53E3\u5DF2\u5B58\u5728\uFF1A${move.to}`);
+        throw new SkillsError("conflict", 409, `The target entry already exists: ${move.to}`);
       }
       await fs.rename(move.from, move.to);
       done.push(move);
       if (await exists(move.from) || !await exists(move.to)) {
-        throw new SkillsError("io", 500, `\u6539\u540D\u540E\u6821\u9A8C\u5931\u8D25\uFF1A${move.to}`);
+        throw new SkillsError("io", 500, `Verification failed after renaming: ${move.to}`);
       }
     }
   } catch (error) {
@@ -440,21 +542,22 @@ var applyMoves = async (moves) => {
       }
     }
     if (error instanceof SkillsError) throw error;
-    throw new SkillsError("io", 500, `\u6539\u540D\u5931\u8D25\uFF1A${describeFs(error)}`);
+    throw new SkillsError("io", 500, `Rename failed: ${describeFs(error)}`);
   }
 };
 var assertRootReadable = (scan) => {
-  if (scan.root.error) {
-    throw new SkillsError("read-error", 409, `\u6280\u80FD\u76EE\u5F55\u65E0\u6CD5\u8BFB\u53D6\uFF1A${scan.root.error}`);
+  const broken = scan.roots.find((root) => root.error);
+  if (broken) {
+    throw new SkillsError("read-error", 409, `Could not read the ${broken.label} skill directory: ${broken.error}`);
   }
 };
-var setSkillEnabled = async (home, id, enabled) => {
-  const before = await scanSkills(home);
+var setSkillEnabled = async (value, id, enabled) => {
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
-  const skill = before.skills.find((item) => item.id === id);
-  if (!skill) throw new SkillsError("not-found", 404, `\u6CA1\u6709\u627E\u5230\u6280\u80FD ${id}`);
+  const skill = findSkill(before.skills, id);
   if (skill.conflicts.some((conflict) => conflict.kind === "both")) {
-    throw new SkillsError("conflict", 409, `\u6280\u80FD ${id} \u6709\u672A\u89E3\u51B3\u7684\u5165\u53E3\u51B2\u7A81\u3002`, skill.conflicts);
+    throw new SkillsError("conflict", 409, `Skill ${id} has unresolved entry conflicts.`, skill.conflicts);
   }
   const moves = [];
   if (!enabled) {
@@ -464,36 +567,37 @@ var setSkillEnabled = async (home, id, enabled) => {
   } else {
     for (const disabledPath of skill.disabledPaths) {
       if (!disabledPath.endsWith(".disabled")) {
-        throw new SkillsError("io", 500, `\u65E0\u6CD5\u8BC6\u522B\u505C\u7528\u5165\u53E3\uFF1A${disabledPath}`);
+        throw new SkillsError("io", 500, `Could not identify the disabled entry: ${disabledPath}`);
       }
       moves.push({ id, from: disabledPath, to: disabledPath.slice(0, -".disabled".length) });
     }
   }
   if (moves.length > 0) await applyMoves(moves);
-  return scanSkills(home);
+  return scanSkills(config);
 };
-var batchSetEnabled = async (home, enable, disable) => {
-  const before = await scanSkills(home);
+var batchSetEnabled = async (value, enable, disable) => {
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
   const enableIds = Array.from(new Set(enable));
   const disableIds = Array.from(new Set(disable));
   if (enableIds.some((id) => disableIds.includes(id))) {
-    throw new SkillsError("invalid-request", 400, "\u540C\u4E00\u4E2A\u6280\u80FD\u4E0D\u80FD\u540C\u65F6\u542F\u7528\u548C\u5173\u95ED\u3002");
+    throw new SkillsError("invalid-request", 400, "A skill cannot be enabled and disabled at the same time.");
   }
   if (enableIds.length + disableIds.length > 200) {
-    throw new SkillsError("invalid-request", 400, "\u4E00\u6B21\u5904\u7406\u7684\u6280\u80FD\u8FC7\u591A\u3002");
+    throw new SkillsError("invalid-request", 400, "Too many skills in one operation.");
   }
-  const byId = new Map(before.skills.map((skill) => [skill.id, skill]));
+  const selected = /* @__PURE__ */ new Map();
   for (const id of [...enableIds, ...disableIds]) {
-    const skill = byId.get(id);
-    if (!skill) throw new SkillsError("not-found", 404, `\u6CA1\u6709\u627E\u5230\u6280\u80FD ${id}`);
+    const skill = findSkill(before.skills, id);
     if (skill.conflicts.some((conflict) => conflict.kind === "both")) {
-      throw new SkillsError("conflict", 409, `\u6280\u80FD ${id} \u6709\u672A\u89E3\u51B3\u7684\u5165\u53E3\u51B2\u7A81\u3002`, skill.conflicts);
+      throw new SkillsError("conflict", 409, `Skill ${id} has unresolved entry conflicts.`, skill.conflicts);
     }
+    selected.set(id, skill);
   }
   const moves = [];
   for (const id of enableIds) {
-    const skill = byId.get(id);
+    const skill = selected.get(id);
     if (!skill) continue;
     for (const disabledPath of skill.disabledPaths) {
       if (!disabledPath.endsWith(".disabled")) continue;
@@ -501,47 +605,49 @@ var batchSetEnabled = async (home, enable, disable) => {
     }
   }
   for (const id of disableIds) {
-    const skill = byId.get(id);
+    const skill = selected.get(id);
     if (!skill) continue;
     for (const activePath of skill.activePaths) {
       moves.push({ id, from: activePath, to: `${activePath}.disabled` });
     }
   }
   if (moves.length > 0) await applyMoves(moves);
-  const after = await scanSkills(home);
+  const after = await scanSkills(config);
   return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
 };
-var bulkSetEnabled = async (home, enabled) => {
-  const before = await scanSkills(home);
+var bulkSetEnabled = async (value, enabled) => {
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
   const blocking = before.conflicts.filter((conflict) => conflict.kind === "both");
   if (blocking.length > 0) {
-    throw new SkillsError("conflict", 409, "\u8FD8\u6709\u672A\u89E3\u51B3\u7684\u5165\u53E3\u51B2\u7A81\uFF0C\u4E0D\u80FD\u6279\u91CF\u64CD\u4F5C\u3002", blocking);
+    throw new SkillsError("conflict", 409, "Unresolved entry conflicts remain; bulk operations are blocked.", blocking);
   }
   const moves = [];
   for (const skill of before.skills) {
     if (!enabled) {
       for (const activePath of skill.activePaths) {
-        moves.push({ id: skill.id, from: activePath, to: `${activePath}.disabled` });
+        moves.push({ id: skill.key, from: activePath, to: `${activePath}.disabled` });
       }
     } else {
       for (const disabledPath of skill.disabledPaths) {
         if (!disabledPath.endsWith(".disabled")) continue;
-        moves.push({ id: skill.id, from: disabledPath, to: disabledPath.slice(0, -".disabled".length) });
+        moves.push({ id: skill.key, from: disabledPath, to: disabledPath.slice(0, -".disabled".length) });
       }
     }
   }
   if (moves.length > 0) await applyMoves(moves);
-  const after = await scanSkills(home);
+  const after = await scanSkills(config);
   return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
 };
-var resolveBoth = async (home, entryPath, keep) => {
-  const before = await scanSkills(home);
+var resolveBoth = async (value, entryPath, keep) => {
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
   const skill = before.skills.find(
     (item) => item.activePaths.includes(entryPath) || item.disabledPaths.includes(entryPath)
   );
-  if (!skill) throw new SkillsError("not-found", 404, "\u6CA1\u6709\u627E\u5230\u8FD9\u4E2A\u5165\u53E3\u51B2\u7A81\uFF0C\u8BF7\u91CD\u65B0\u626B\u63CF\u3002");
+  if (!skill) throw new SkillsError("not-found", 404, "This entry conflict was not found. Rescan.");
   let activePath = null;
   let disabledPath = null;
   if (skill.activePaths.includes(entryPath)) {
@@ -552,129 +658,31 @@ var resolveBoth = async (home, entryPath, keep) => {
     activePath = entryPath.endsWith(".disabled") ? entryPath.slice(0, -".disabled".length) : null;
   }
   if (!activePath || !disabledPath || !skill.activePaths.includes(activePath) || !skill.disabledPaths.includes(disabledPath)) {
-    throw new SkillsError("not-found", 404, "\u6CA1\u6709\u627E\u5230\u8FD9\u4E2A\u5165\u53E3\u51B2\u7A81\uFF0C\u8BF7\u91CD\u65B0\u626B\u63CF\u3002");
+    throw new SkillsError("not-found", 404, "This entry conflict was not found. Rescan.");
   }
   const backupPath = `${disabledPath}.conflict-${Date.now()}-${randomUUID().slice(0, 8)}`;
   if (keep === "enabled") {
-    await applyMoves([{ id: skill.id, from: disabledPath, to: backupPath }]);
+    await applyMoves([{ id: skill.key, from: disabledPath, to: backupPath }]);
   } else {
-    await applyMoves([{ id: skill.id, from: disabledPath, to: backupPath }]);
+    await applyMoves([{ id: skill.key, from: disabledPath, to: backupPath }]);
     try {
-      await applyMoves([{ id: skill.id, from: activePath, to: disabledPath }]);
+      await applyMoves([{ id: skill.key, from: activePath, to: disabledPath }]);
     } catch (error) {
       try {
-        await applyMoves([{ id: skill.id, from: backupPath, to: disabledPath }]);
+        await applyMoves([{ id: skill.key, from: backupPath, to: disabledPath }]);
       } catch {
       }
       throw error;
     }
   }
-  const after = await scanSkills(home);
+  const after = await scanSkills(config);
   return { ...after, backupPath };
 };
 
-// src/core/translations.ts
-import fs2 from "node:fs/promises";
-import path2 from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
-var DATA_DIR = [".config", "openchamber", "skills-manager"];
-var CACHE_FILE = "translations.json";
-var MAX_ENTRIES = 300;
-var MAX_NAME = 300;
-var MAX_DESCRIPTION = 8e3;
-var TranslationError = class extends Error {
-  code;
-  status;
-  constructor(code, status, message) {
-    super(message);
-    this.name = "TranslationError";
-    this.code = code;
-    this.status = status;
-  }
-};
-var empty = () => ({ version: 1, locale: "zh-CN", entries: {} });
-var cacheFile = (home) => path2.join(home, ...DATA_DIR, CACHE_FILE);
-var validateEntry = (value) => {
-  if (!value || typeof value !== "object") return null;
-  const record = value;
-  if (typeof record.hash !== "string" || typeof record.nameZh !== "string" || typeof record.descriptionZh !== "string" || typeof record.updatedAt !== "number") {
-    return null;
-  }
-  const hash = record.hash.slice(0, 128);
-  const nameZh = record.nameZh.trim().slice(0, MAX_NAME);
-  const descriptionZh = record.descriptionZh.trim().slice(0, MAX_DESCRIPTION);
-  if (!hash || !nameZh) return null;
-  return { hash, nameZh, descriptionZh, updatedAt: record.updatedAt };
-};
-var readTranslations = async (home) => {
-  let raw;
-  try {
-    raw = await fs2.readFile(cacheFile(home), "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return empty();
-    throw new TranslationError("read-error", 500, "\u65E0\u6CD5\u8BFB\u53D6\u7FFB\u8BD1\u7F13\u5B58\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650\u3002");
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed.version !== 1 || parsed.locale !== "zh-CN" || !parsed.entries || typeof parsed.entries !== "object") {
-      throw new Error("invalid cache");
-    }
-    const entries = {};
-    for (const [id, value] of Object.entries(parsed.entries)) {
-      if (!id || id.length > 128) continue;
-      const entry = validateEntry(value);
-      if (entry) entries[id] = entry;
-    }
-    return { version: 1, locale: "zh-CN", entries };
-  } catch {
-    throw new TranslationError("invalid-cache", 500, "\u7FFB\u8BD1\u7F13\u5B58\u6587\u4EF6\u635F\u574F\uFF1B\u539F\u6587\u4EF6\u672A\u4FEE\u6539\u3002");
-  }
-};
-var writeTranslations = async (home, value) => {
-  if (!value || typeof value !== "object") {
-    throw new TranslationError("invalid-cache", 400, "\u7FFB\u8BD1\u7F13\u5B58\u683C\u5F0F\u4E0D\u6B63\u786E\u3002");
-  }
-  const record = value;
-  if (record.version !== 1 || record.locale !== "zh-CN" || !record.entries || typeof record.entries !== "object" || Array.isArray(record.entries)) {
-    throw new TranslationError("invalid-cache", 400, "\u7FFB\u8BD1\u7F13\u5B58\u683C\u5F0F\u4E0D\u6B63\u786E\u3002");
-  }
-  const rawEntries = Object.entries(record.entries);
-  if (rawEntries.length > MAX_ENTRIES) {
-    throw new TranslationError("invalid-cache", 400, "\u7FFB\u8BD1\u7F13\u5B58\u6761\u76EE\u8FC7\u591A\u3002");
-  }
-  const entries = {};
-  for (const [id, item] of rawEntries) {
-    if (!id || id.length > 128) continue;
-    const entry = validateEntry(item);
-    if (entry) entries[id] = entry;
-  }
-  const dir = path2.join(home, ...DATA_DIR);
-  const file = cacheFile(home);
-  const temporary = `${file}.${randomUUID2()}.tmp`;
-  try {
-    await fs2.mkdir(dir, { recursive: true, mode: 448 });
-    await fs2.writeFile(temporary, `${JSON.stringify({ version: 1, locale: "zh-CN", entries }, null, 2)}
-`, {
-      encoding: "utf8",
-      mode: 384
-    });
-    await fs2.rename(temporary, file);
-    const check = await readTranslations(home);
-    return check;
-  } catch (error) {
-    try {
-      await fs2.unlink(temporary);
-    } catch {
-    }
-    if (error instanceof TranslationError) throw error;
-    throw new TranslationError("write-error", 500, "\u4FDD\u5B58\u7FFB\u8BD1\u7F13\u5B58\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u76EE\u5F55\u6743\u9650\u3002");
-  }
-};
-
 // src/core/groups.ts
-import fs3 from "node:fs/promises";
+import fs2 from "node:fs/promises";
 import path3 from "node:path";
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/shared/groups.ts
 var GROUP_LIMIT = 50;
@@ -690,39 +698,39 @@ var GroupFileError = class extends Error {
 };
 var normalizeGroupsFile = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new GroupFileError("\u5206\u7EC4\u914D\u7F6E\u683C\u5F0F\u4E0D\u6B63\u786E");
+    throw new GroupFileError("The group configuration format is invalid.");
   }
   const record = value;
-  if (record.version !== 1) throw new GroupFileError("\u5206\u7EC4\u914D\u7F6E\u7248\u672C\u4E0D\u53D7\u652F\u6301");
-  if (!Array.isArray(record.groups)) throw new GroupFileError("\u5206\u7EC4\u5217\u8868\u683C\u5F0F\u4E0D\u6B63\u786E");
-  if (record.groups.length > GROUP_LIMIT) throw new GroupFileError(`\u5206\u7EC4\u4E0D\u80FD\u8D85\u8FC7 ${GROUP_LIMIT} \u4E2A`);
+  if (record.version !== 1) throw new GroupFileError("The group configuration version is not supported.");
+  if (!Array.isArray(record.groups)) throw new GroupFileError("The group list format is invalid.");
+  if (record.groups.length > GROUP_LIMIT) throw new GroupFileError(`At most ${GROUP_LIMIT} groups are allowed.`);
   const groups = [];
   const groupIds = /* @__PURE__ */ new Set();
   const names = /* @__PURE__ */ new Set();
   for (const [index, item] of record.groups.entries()) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new GroupFileError(`\u7B2C ${index + 1} \u4E2A\u5206\u7EC4\u683C\u5F0F\u4E0D\u6B63\u786E`);
+      throw new GroupFileError(`Group ${index + 1} has an invalid format.`);
     }
     const group = item;
     if (typeof group.id !== "string" || !GROUP_ID_PATTERN.test(group.id) || RESERVED_GROUP_IDS.has(group.id)) {
-      throw new GroupFileError(`\u7B2C ${index + 1} \u4E2A\u5206\u7EC4\u7684 ID \u65E0\u6548`);
+      throw new GroupFileError(`Group ${index + 1} has an invalid ID.`);
     }
-    if (groupIds.has(group.id)) throw new GroupFileError(`\u5206\u7EC4 ID \u91CD\u590D\uFF1A${group.id}`);
+    if (groupIds.has(group.id)) throw new GroupFileError(`Duplicate group ID: ${group.id}`);
     const name = typeof group.name === "string" ? group.name.trim() : "";
     if (!name || name.length > GROUP_NAME_MAX || /[\u0000-\u001f\u007f]/.test(name)) {
-      throw new GroupFileError(`\u7B2C ${index + 1} \u4E2A\u5206\u7EC4\u540D\u79F0\u9700\u4E3A 1-${GROUP_NAME_MAX} \u4E2A\u5B57\u7B26`);
+      throw new GroupFileError(`Group ${index + 1} names must be 1\u2013${GROUP_NAME_MAX} characters.`);
     }
     const nameKey = name.toLowerCase();
-    if (names.has(nameKey)) throw new GroupFileError(`\u5206\u7EC4\u540D\u79F0\u91CD\u590D\uFF1A${name}`);
-    if (!Array.isArray(group.skillIds)) throw new GroupFileError(`\u5206\u7EC4\u300C${name}\u300D\u7684\u6210\u5458\u683C\u5F0F\u4E0D\u6B63\u786E`);
+    if (names.has(nameKey)) throw new GroupFileError(`Duplicate group name: ${name}`);
+    if (!Array.isArray(group.skillIds)) throw new GroupFileError(`The members of group "${name}" have an invalid format.`);
     if (group.skillIds.length > GROUP_MEMBER_LIMIT) {
-      throw new GroupFileError(`\u5206\u7EC4\u300C${name}\u300D\u7684\u6210\u5458\u4E0D\u80FD\u8D85\u8FC7 ${GROUP_MEMBER_LIMIT} \u4E2A`);
+      throw new GroupFileError(`Group "${name}" cannot have more than ${GROUP_MEMBER_LIMIT} members.`);
     }
     const skillIds = [];
     const seen = /* @__PURE__ */ new Set();
     for (const skillId of group.skillIds) {
       if (typeof skillId !== "string" || !skillId || skillId.length > 128) {
-        throw new GroupFileError(`\u5206\u7EC4\u300C${name}\u300D\u542B\u65E0\u6548\u7684\u6280\u80FD ID`);
+        throw new GroupFileError(`Group "${name}" contains an invalid skill ID.`);
       }
       if (seen.has(skillId)) continue;
       seen.add(skillId);
@@ -736,7 +744,7 @@ var normalizeGroupsFile = (value) => {
 };
 
 // src/core/groups.ts
-var DATA_DIR2 = [".config", "openchamber", "skills-manager"];
+var DATA_DIR = [".config", "openchamber", "skills-manager"];
 var GROUPS_FILE = "groups.json";
 var GroupError = class extends Error {
   code;
@@ -749,22 +757,25 @@ var GroupError = class extends Error {
   }
 };
 var defaults = () => ({ version: 1, groups: [] });
-var groupsFile = (home) => path3.join(home, ...DATA_DIR2, GROUPS_FILE);
-var readGroups = async (home) => {
+var legacyDataDir = (home) => path3.join(home, ...DATA_DIR);
+var dataDirFor = (home, override) => override ?? legacyDataDir(home);
+var groupsFile = (dir) => path3.join(dir, GROUPS_FILE);
+var readGroups = async (home, dataDirOverride) => {
+  const file = groupsFile(dataDirFor(home, dataDirOverride));
   let raw;
   try {
-    raw = await fs3.readFile(groupsFile(home), "utf8");
+    raw = await fs2.readFile(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return defaults();
-    throw new GroupError("read-error", 500, "\u65E0\u6CD5\u8BFB\u53D6\u5206\u7EC4\u914D\u7F6E\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650\u3002");
+    throw new GroupError("read-error", 500, `Could not read the group configuration at ${file}. Check file permissions.`);
   }
   try {
     return normalizeGroupsFile(JSON.parse(raw));
   } catch {
-    throw new GroupError("invalid-groups", 500, "\u5206\u7EC4\u914D\u7F6E\u6587\u4EF6\u635F\u574F\uFF1B\u539F\u6587\u4EF6\u672A\u4FEE\u6539\uFF08~/.config/openchamber/skills-manager/groups.json\uFF09\u3002");
+    throw new GroupError("invalid-groups", 500, `The group configuration is malformed; the original file was not changed (${file}).`);
   }
 };
-var writeGroups = async (home, value) => {
+var writeGroups = async (home, value, dataDirOverride) => {
   let normalized;
   try {
     normalized = normalizeGroupsFile(value);
@@ -772,27 +783,27 @@ var writeGroups = async (home, value) => {
     if (error instanceof GroupFileError) {
       throw new GroupError("invalid-groups", 400, error.message);
     }
-    throw new GroupError("invalid-groups", 400, "\u5206\u7EC4\u914D\u7F6E\u683C\u5F0F\u4E0D\u6B63\u786E\u3002");
+    throw new GroupError("invalid-groups", 400, "The group configuration format is invalid.");
   }
-  const dir = path3.join(home, ...DATA_DIR2);
-  const file = groupsFile(home);
-  const temporary = `${file}.${randomUUID3()}.tmp`;
+  const dir = dataDirFor(home, dataDirOverride);
+  const file = groupsFile(dir);
+  const temporary = `${file}.${randomUUID2()}.tmp`;
   try {
-    await fs3.mkdir(dir, { recursive: true, mode: 448 });
-    await fs3.writeFile(temporary, `${JSON.stringify(normalized, null, 2)}
+    await fs2.mkdir(dir, { recursive: true, mode: 448 });
+    await fs2.writeFile(temporary, `${JSON.stringify(normalized, null, 2)}
 `, {
       encoding: "utf8",
       mode: 384
     });
-    await fs3.rename(temporary, file);
-    return await readGroups(home);
+    await fs2.rename(temporary, file);
+    return await readGroups(home, dataDirOverride);
   } catch (error) {
     try {
-      await fs3.unlink(temporary);
+      await fs2.unlink(temporary);
     } catch {
     }
     if (error instanceof GroupError) throw error;
-    throw new GroupError("write-error", 500, "\u4FDD\u5B58\u5206\u7EC4\u914D\u7F6E\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u76EE\u5F55\u6743\u9650\u3002");
+    throw new GroupError("write-error", 500, "Could not save the group configuration. Check directory permissions.");
   }
 };
 
@@ -804,6 +815,7 @@ if (!port || !token) {
   process.exit(1);
 }
 var HOME = os.homedir();
+var DATA_DIR2 = process.env.OPENCHAMBER_SERVICE_DATA_DIR || void 0;
 var json = (res, status, body) => {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -821,12 +833,12 @@ var readBody = (req) => new Promise((resolve, reject) => {
     if (size > 256 * 1024) {
       failed = true;
       chunks.length = 0;
-      reject(new SkillsError("too-large", 413, "\u63D0\u4EA4\u5185\u5BB9\u8FC7\u5927"));
+      reject(new SkillsError("too-large", 413, "The submitted content is too large."));
       return;
     }
     chunks.push(chunk);
   });
-  req.on("error", () => reject(new SkillsError("invalid-request", 400, "\u8BF7\u6C42\u4E2D\u65AD\uFF0C\u8BF7\u91CD\u8BD5")));
+  req.on("error", () => reject(new SkillsError("invalid-request", 400, "The request was interrupted. Try again.")));
   req.on("end", () => {
     if (failed) return;
     try {
@@ -836,7 +848,7 @@ var readBody = (req) => new Promise((resolve, reject) => {
       }
       resolve(parsed);
     } catch {
-      reject(new SkillsError("invalid-request", 400, "\u8BF7\u6C42\u5185\u5BB9\u5FC5\u987B\u662F\u6709\u6548\u7684 JSON \u5BF9\u8C61"));
+      reject(new SkillsError("invalid-request", 400, "The request body must be a valid JSON object."));
     }
   });
 });
@@ -848,23 +860,32 @@ var exclusive = (action) => {
 };
 var stringField = (body, key, max) => {
   const value = typeof body[key] === "string" ? body[key].trim() : "";
-  if (!value) throw new SkillsError("invalid-request", 400, `\u7F3A\u5C11 ${key}`);
-  if (value.length > max) throw new SkillsError("invalid-request", 400, `${key} \u957F\u5EA6\u8D85\u51FA\u9650\u5236`);
+  if (!value) throw new SkillsError("invalid-request", 400, `Missing ${key}.`);
+  if (value.length > max) throw new SkillsError("invalid-request", 400, `${key} exceeds the length limit.`);
+  return value;
+};
+var pathField = (body, key, max) => {
+  const value = typeof body[key] === "string" ? body[key] : "";
+  if (!value || value.length > max) throw new SkillsError("invalid-request", 400, `Missing ${key}.`);
   return value;
 };
 var booleanField = (body, key) => {
   const value = body[key];
-  if (typeof value !== "boolean") throw new SkillsError("invalid-request", 400, `${key} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
+  if (typeof value !== "boolean") throw new SkillsError("invalid-request", 400, `${key} must be a boolean.`);
   return value;
 };
 var stringArrayField = (body, key) => {
   const value = body[key];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0 || item.length > 128)) {
-    throw new SkillsError("invalid-request", 400, `${key} \u5FC5\u987B\u662F\u6280\u80FD ID \u6570\u7EC4`);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0 || item.length > 256)) {
+    throw new SkillsError("invalid-request", 400, `${key} must be an array of skill IDs.`);
   }
-  if (value.length > 200) throw new SkillsError("invalid-request", 400, `${key} \u6761\u76EE\u8FC7\u591A`);
+  if (value.length > 200) throw new SkillsError("invalid-request", 400, `Too many ${key} entries.`);
   return value;
 };
+var scanFor = (directory) => ({
+  home: HOME,
+  projectDirectory: normalizeProjectDirectory(directory)
+});
 var handle = async (req, res) => {
   if (req.headers.authorization !== `Bearer ${token}`) {
     throw new SkillsError("unauthorized", 401, "unauthorized");
@@ -875,53 +896,49 @@ var handle = async (req, res) => {
     return;
   }
   if (url.pathname === "/skills" && req.method === "GET") {
-    json(res, 200, await exclusive(() => scanSkills(HOME)));
+    const config = scanFor(url.searchParams.get("directory"));
+    json(res, 200, await exclusive(() => scanSkills(config)));
     return;
   }
   if (url.pathname === "/skills/toggle" && req.method === "POST") {
     const body = await readBody(req);
-    const id = stringField(body, "id", 128);
+    const id = stringField(body, "id", 256);
     const enabled = booleanField(body, "enabled");
-    json(res, 200, await exclusive(() => setSkillEnabled(HOME, id, enabled)));
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => setSkillEnabled(config, id, enabled)));
     return;
   }
   if (url.pathname === "/skills/bulk" && req.method === "POST") {
     const body = await readBody(req);
     const enabled = booleanField(body, "enabled");
-    json(res, 200, await exclusive(() => bulkSetEnabled(HOME, enabled)));
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => bulkSetEnabled(config, enabled)));
     return;
   }
   if (url.pathname === "/skills/batch" && req.method === "POST") {
     const body = await readBody(req);
     const enable = stringArrayField(body, "enable");
     const disable = stringArrayField(body, "disable");
-    json(res, 200, await exclusive(() => batchSetEnabled(HOME, enable, disable)));
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => batchSetEnabled(config, enable, disable)));
     return;
   }
   if (url.pathname === "/groups" && req.method === "GET") {
-    json(res, 200, await exclusive(() => readGroups(HOME)));
+    json(res, 200, await exclusive(() => readGroups(HOME, DATA_DIR2)));
     return;
   }
   if (url.pathname === "/groups" && req.method === "POST") {
     const body = await readBody(req);
-    json(res, 200, await exclusive(() => writeGroups(HOME, body)));
-    return;
-  }
-  if (url.pathname === "/translations" && req.method === "GET") {
-    json(res, 200, await exclusive(() => readTranslations(HOME)));
-    return;
-  }
-  if (url.pathname === "/translations" && req.method === "POST") {
-    const body = await readBody(req);
-    json(res, 200, await exclusive(() => writeTranslations(HOME, body)));
+    json(res, 200, await exclusive(() => writeGroups(HOME, body, DATA_DIR2)));
     return;
   }
   if (url.pathname === "/skills/resolve" && req.method === "POST") {
     const body = await readBody(req);
-    const entryPath = stringField(body, "path", 4096);
+    const entryPath = pathField(body, "path", 4096);
     const keep = body.keep === "enabled" || body.keep === "disabled" ? body.keep : null;
-    if (!keep) throw new SkillsError("invalid-request", 400, "keep \u5FC5\u987B\u662F enabled \u6216 disabled");
-    json(res, 200, await exclusive(() => resolveBoth(HOME, entryPath, keep)));
+    if (!keep) throw new SkillsError("invalid-request", 400, "keep must be enabled or disabled.");
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(() => resolveBoth(config, entryPath, keep)));
     return;
   }
   throw new SkillsError("not-found", 404, "not-found");
@@ -929,7 +946,7 @@ var handle = async (req, res) => {
 var server = http.createServer((req, res) => {
   void handle(req, res).catch((error) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError || error instanceof TranslationError || error instanceof GroupError) {
+    if (error instanceof SkillsError || error instanceof GroupError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,
@@ -938,7 +955,7 @@ var server = http.createServer((req, res) => {
       return;
     }
     console.error("skills service:", error instanceof Error ? error.message : error);
-    json(res, 500, { error: "\u672C\u5730\u670D\u52A1\u5904\u7406\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5", code: "internal" });
+    json(res, 500, { error: "The local service failed to process the request. Try again.", code: "internal" });
   });
 });
 server.listen(port, "127.0.0.1");

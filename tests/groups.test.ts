@@ -32,7 +32,7 @@ test('example groups are unique, valid and independent', () => {
 test('example groups merge without overwriting existing ids or names', () => {
   const existing = [
     { id: 'custom-a', name: EXAMPLE_SKILL_GROUPS[0].name, skillIds: ['alpha'] },
-    { id: EXAMPLE_SKILL_GROUPS[1].id, name: '自定义名称', skillIds: ['beta'] },
+    { id: EXAMPLE_SKILL_GROUPS[1].id, name: 'Custom Name', skillIds: ['beta'] },
   ];
   const { groups, added } = mergeExampleGroups(existing);
   assert.equal(added.length, EXAMPLE_SKILL_GROUPS.length - 2);
@@ -53,9 +53,9 @@ test('merging examples twice adds nothing', () => {
 test('group config trims names and dedupes members', () => {
   const file = normalizeGroupsFile({
     version: 1,
-    groups: [{ id: 'custom-daily', name: '  日常开发  ', skillIds: ['alpha', 'alpha', 'beta'] }],
+    groups: [{ id: 'custom-daily', name: '  Daily Development  ', skillIds: ['alpha', 'alpha', 'beta'] }],
   });
-  assert.deepEqual(file.groups, [{ id: 'custom-daily', name: '日常开发', skillIds: ['alpha', 'beta'] }]);
+  assert.deepEqual(file.groups, [{ id: 'custom-daily', name: 'Daily Development', skillIds: ['alpha', 'beta'] }]);
 });
 
 test('group config rejects reserved ids, duplicate names and empty payloads', () => {

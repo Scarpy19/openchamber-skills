@@ -24,24 +24,27 @@ export class GroupError extends Error {
 
 const defaults = (): GroupsFile => ({ version: 1, groups: [] });
 
-const groupsFile = (home: string): string => path.join(home, ...DATA_DIR, GROUPS_FILE);
+const legacyDataDir = (home: string): string => path.join(home, ...DATA_DIR);
+const dataDirFor = (home: string, override?: string): string => override ?? legacyDataDir(home);
+const groupsFile = (dir: string): string => path.join(dir, GROUPS_FILE);
 
-export const readGroups = async (home: string): Promise<GroupsFile> => {
+export const readGroups = async (home: string, dataDirOverride?: string): Promise<GroupsFile> => {
+  const file = groupsFile(dataDirFor(home, dataDirOverride));
   let raw: string;
   try {
-    raw = await fs.readFile(groupsFile(home), 'utf8');
+    raw = await fs.readFile(file, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaults();
-    throw new GroupError('read-error', 500, '无法读取分组配置，请检查文件权限。');
+    throw new GroupError('read-error', 500, `Could not read the group configuration at ${file}. Check file permissions.`);
   }
   try {
     return normalizeGroupsFile(JSON.parse(raw));
   } catch {
-    throw new GroupError('invalid-groups', 500, '分组配置文件损坏；原文件未修改（~/.config/openchamber/skills-manager/groups.json）。');
+    throw new GroupError('invalid-groups', 500, `The group configuration is malformed; the original file was not changed (${file}).`);
   }
 };
 
-export const writeGroups = async (home: string, value: unknown): Promise<GroupsFile> => {
+export const writeGroups = async (home: string, value: unknown, dataDirOverride?: string): Promise<GroupsFile> => {
   let normalized: GroupsFile;
   try {
     normalized = normalizeGroupsFile(value);
@@ -49,11 +52,11 @@ export const writeGroups = async (home: string, value: unknown): Promise<GroupsF
     if (error instanceof GroupFileError) {
       throw new GroupError('invalid-groups', 400, error.message);
     }
-    throw new GroupError('invalid-groups', 400, '分组配置格式不正确。');
+    throw new GroupError('invalid-groups', 400, 'The group configuration format is invalid.');
   }
 
-  const dir = path.join(home, ...DATA_DIR);
-  const file = groupsFile(home);
+  const dir = dataDirFor(home, dataDirOverride);
+  const file = groupsFile(dir);
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -62,13 +65,13 @@ export const writeGroups = async (home: string, value: unknown): Promise<GroupsF
       mode: 0o600,
     });
     await fs.rename(temporary, file);
-    return await readGroups(home);
+    return await readGroups(home, dataDirOverride);
   } catch (error) {
     try {
       await fs.unlink(temporary);
     } catch {
     }
     if (error instanceof GroupError) throw error;
-    throw new GroupError('write-error', 500, '保存分组配置失败，请检查目录权限。');
+    throw new GroupError('write-error', 500, 'Could not save the group configuration. Check directory permissions.');
   }
 };

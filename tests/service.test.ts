@@ -26,6 +26,7 @@ const skillText = (name: string, description: string): string =>
 
 test('skills service enforces auth and checks entry conflicts', async (t) => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), 'skills-service-'));
+  const dataDir = path.join(fixture, 'extension-data');
   const opencode = path.join(fixture, '.config/opencode/skills');
   await mkdir(opencode, { recursive: true });
 
@@ -52,7 +53,13 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
   await new Promise((resolve) => reservation.close(resolve));
 
   const child = spawn(process.execPath, ['--require', prelude, path.join(project, 'service/main.js')], {
-    env: { ...process.env, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: token },
+    env: {
+      ...process.env,
+      OPENCHAMBER_SERVICE_PORT: String(port),
+      OPENCHAMBER_SERVICE_TOKEN: token,
+      OPENCHAMBER_SERVICE_DATA_DIR: dataDir,
+      XDG_CONFIG_HOME: path.join(fixture, '.config'),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -103,14 +110,40 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     assert.equal((await call('/groups', 'GET', undefined, false)).status, 401);
   });
 
-  await t.test('lists only the OpenCode directory', async () => {
+  await t.test('lists global skills from all OpenCode discovery roots', async () => {
     const result = await call('/skills');
     assert.equal(result.status, 200);
-    const skills = result.data.skills as Array<{ id: string; advertised: boolean; contentHash: string }>;
+    const skills = result.data.skills as Array<{ id: string; key: string; advertised: boolean; scope: string; sourceId: string }>;
     assert.equal(skills.find((skill) => skill.id === 'alpha')?.advertised, true);
-    assert.equal(skills.find((skill) => skill.id === 'alpha')?.contentHash.length, 64);
     assert.equal(skills.find((skill) => skill.id === 'beta')?.advertised, true);
-    assert.equal(skills.some((skill) => skill.id === 'other'), false);
+    const other = skills.find((skill) => skill.id === 'other');
+    assert.equal(other?.advertised, true);
+    assert.equal(other?.scope, 'global');
+    assert.equal(other?.sourceId, 'claude-global');
+    assert.equal(skills.find((skill) => skill.id === 'alpha')?.key, 'opencode-global:alpha');
+  });
+
+  await t.test('discovers and toggles project skills when the host sends a directory', async () => {
+    const project = path.join(fixture, 'workspace');
+    const local = path.join(project, '.opencode/skills/local/SKILL.md');
+    await mkdir(path.dirname(local), { recursive: true });
+    await writeFile(local, skillText('Local', 'Project skill'));
+
+    const listed = await call(`/skills?directory=${encodeURIComponent(project)}`);
+    assert.equal(listed.status, 200);
+    const skills = listed.data.skills as Array<{ id: string; key: string; scope: string; rootPath: string }>;
+    const projectSkill = skills.find((skill) => skill.id === 'local');
+    assert.equal(projectSkill?.scope, 'project');
+    assert.equal(projectSkill?.key, 'opencode-project:local');
+    assert.equal(projectSkill?.rootPath, path.join(project, '.opencode/skills'));
+
+    const off = await call('/skills/toggle', 'POST', { id: 'opencode-project:local', enabled: false, directory: project });
+    assert.equal(off.status, 200);
+    assert.equal(await exists(`${local}.disabled`), true);
+    assert.equal(await exists(path.join(opencode, 'alpha/SKILL.md')), true);
+    const on = await call('/skills/toggle', 'POST', { id: 'opencode-project:local', enabled: true, directory: project });
+    assert.equal(on.status, 200);
+    assert.equal(await exists(local), true);
   });
 
   await t.test('toggles an entry document off and back on', async () => {
@@ -150,24 +183,6 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     assert.equal(await exists(alpha), true);
   });
 
-  await t.test('stores translation cache privately', async () => {
-    const initial = await call('/translations');
-    assert.equal(initial.status, 200);
-    assert.deepEqual(initial.data.entries, {});
-    const saved = await call('/translations', 'POST', {
-      version: 1,
-      locale: 'zh-CN',
-      entries: {
-        alpha: { hash: 'abc', nameZh: '阿尔法', descriptionZh: '中文说明', updatedAt: 1 },
-      },
-    });
-    assert.equal(saved.status, 200);
-    assert.equal((saved.data.entries as Record<string, { nameZh: string }>).alpha.nameZh, '阿尔法');
-    const cacheFile = path.join(fixture, '.config/openchamber/skills-manager/translations.json');
-    const cacheStat = await stat(cacheFile);
-    assert.equal(cacheStat.mode & 0o777, 0o600);
-  });
-
   await t.test('stores editable groups privately', async () => {
     const initial = await call('/groups');
     assert.equal(initial.status, 200);
@@ -175,24 +190,25 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
 
     const saved = await call('/groups', 'POST', {
       version: 1,
-      groups: [{ id: 'custom-daily', name: '日常开发', skillIds: ['alpha', 'beta'] }],
+      groups: [{ id: 'custom-daily', name: 'Daily Development', skillIds: ['alpha', 'beta'] }],
     });
     assert.equal(saved.status, 200);
     assert.deepEqual(
       (saved.data.groups as Array<{ id: string; name: string }>).map((group) => group.name),
-      ['日常开发'],
+      ['Daily Development'],
     );
-    const groupsFile = path.join(fixture, '.config/openchamber/skills-manager/groups.json');
-    assert.equal((await stat(groupsFile)).mode & 0o777, 0o600);
+    const groupsFile = path.join(dataDir, 'groups.json');
+    if (process.platform !== 'win32') assert.equal((await stat(groupsFile)).mode & 0o777, 0o600);
+    assert.equal(await exists(path.join(fixture, '.config/openchamber/skills-manager/groups.json')), false);
     assert.equal(((await call('/groups')).data.groups as unknown[]).length, 1);
   });
 
   await t.test('rejects invalid groups and keeps a corrupt file untouched', async () => {
-    const groupsFile = path.join(fixture, '.config/openchamber/skills-manager/groups.json');
+    const groupsFile = path.join(dataDir, 'groups.json');
     const before = await readFile(groupsFile, 'utf8');
     const invalid = await call('/groups', 'POST', {
       version: 1,
-      groups: [{ id: 'all', name: '全部', skillIds: ['alpha'] }],
+      groups: [{ id: 'all', name: 'All', skillIds: ['alpha'] }],
     });
     assert.equal(invalid.status, 400);
     assert.equal(invalid.data.code, 'invalid-groups');
@@ -232,6 +248,8 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     assert.equal((await call('/skills/toggle', 'POST', { id: 'alpha' })).status, 400);
     assert.equal((await call('/skills/resolve', 'POST', { path: alpha, keep: 'maybe' })).status, 400);
     assert.equal((await call('/unknown')).status, 404);
+    assert.equal((await call('/translations')).status, 404);
+    assert.equal((await call('/translations', 'POST', {})).status, 404);
     assert.equal((await call('/health')).status, 200);
   });
 
@@ -240,7 +258,7 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     await writeFile(opencode, 'not a directory');
     const scan = await call('/skills');
     assert.equal(scan.status, 200);
-    assert.equal((scan.data.root as { error: string | null }).error, '不是目录');
+    assert.equal((scan.data.root as { error: string | null }).error, 'Not a directory');
     const blocked = await call('/skills/toggle', 'POST', { id: 'alpha', enabled: false });
     assert.equal(blocked.status, 409);
     assert.equal(blocked.data.code, 'read-error');

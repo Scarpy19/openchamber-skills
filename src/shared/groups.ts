@@ -36,7 +36,7 @@ export const EXAMPLE_SKILL_GROUPS: SkillGroup[] = [
   },
   {
     id: 'macos-build',
-    name: 'macOS 构建',
+    name: 'macOS Build',
     skillIds: [
       'build-run-debug',
       'test-triage',
@@ -48,7 +48,7 @@ export const EXAMPLE_SKILL_GROUPS: SkillGroup[] = [
   },
   {
     id: 'reverse',
-    name: '逆向工程',
+    name: 'Reverse Engineering',
     skillIds: [
       'reverse-engineering-unpacking',
       'kuna-decompiler',
@@ -62,12 +62,12 @@ export const EXAMPLE_SKILL_GROUPS: SkillGroup[] = [
   },
   {
     id: 'video',
-    name: '视频',
+    name: 'Video',
     skillIds: ['yichen-jianying-edit'],
   },
   {
     id: 'browser',
-    name: '浏览器',
+    name: 'Browser',
     skillIds: ['browser-skill'],
   },
 ];
@@ -101,40 +101,40 @@ export const moveGroupMember = (members: readonly string[], index: number, delta
 
 export const normalizeGroupsFile = (value: unknown): GroupsFile => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new GroupFileError('分组配置格式不正确');
+    throw new GroupFileError('The group configuration format is invalid.');
   }
   const record = value as Record<string, unknown>;
-  if (record.version !== 1) throw new GroupFileError('分组配置版本不受支持');
-  if (!Array.isArray(record.groups)) throw new GroupFileError('分组列表格式不正确');
-  if (record.groups.length > GROUP_LIMIT) throw new GroupFileError(`分组不能超过 ${GROUP_LIMIT} 个`);
+  if (record.version !== 1) throw new GroupFileError('The group configuration version is not supported.');
+  if (!Array.isArray(record.groups)) throw new GroupFileError('The group list format is invalid.');
+  if (record.groups.length > GROUP_LIMIT) throw new GroupFileError(`At most ${GROUP_LIMIT} groups are allowed.`);
 
   const groups: SkillGroup[] = [];
   const groupIds = new Set<string>();
   const names = new Set<string>();
   for (const [index, item] of record.groups.entries()) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new GroupFileError(`第 ${index + 1} 个分组格式不正确`);
+      throw new GroupFileError(`Group ${index + 1} has an invalid format.`);
     }
     const group = item as Record<string, unknown>;
     if (typeof group.id !== 'string' || !GROUP_ID_PATTERN.test(group.id) || RESERVED_GROUP_IDS.has(group.id)) {
-      throw new GroupFileError(`第 ${index + 1} 个分组的 ID 无效`);
+      throw new GroupFileError(`Group ${index + 1} has an invalid ID.`);
     }
-    if (groupIds.has(group.id)) throw new GroupFileError(`分组 ID 重复：${group.id}`);
+    if (groupIds.has(group.id)) throw new GroupFileError(`Duplicate group ID: ${group.id}`);
     const name = typeof group.name === 'string' ? group.name.trim() : '';
     if (!name || name.length > GROUP_NAME_MAX || /[\u0000-\u001f\u007f]/.test(name)) {
-      throw new GroupFileError(`第 ${index + 1} 个分组名称需为 1-${GROUP_NAME_MAX} 个字符`);
+      throw new GroupFileError(`Group ${index + 1} names must be 1–${GROUP_NAME_MAX} characters.`);
     }
     const nameKey = name.toLowerCase();
-    if (names.has(nameKey)) throw new GroupFileError(`分组名称重复：${name}`);
-    if (!Array.isArray(group.skillIds)) throw new GroupFileError(`分组「${name}」的成员格式不正确`);
+    if (names.has(nameKey)) throw new GroupFileError(`Duplicate group name: ${name}`);
+    if (!Array.isArray(group.skillIds)) throw new GroupFileError(`The members of group "${name}" have an invalid format.`);
     if (group.skillIds.length > GROUP_MEMBER_LIMIT) {
-      throw new GroupFileError(`分组「${name}」的成员不能超过 ${GROUP_MEMBER_LIMIT} 个`);
+      throw new GroupFileError(`Group "${name}" cannot have more than ${GROUP_MEMBER_LIMIT} members.`);
     }
     const skillIds: string[] = [];
     const seen = new Set<string>();
     for (const skillId of group.skillIds) {
       if (typeof skillId !== 'string' || !skillId || skillId.length > 128) {
-        throw new GroupFileError(`分组「${name}」含无效的技能 ID`);
+        throw new GroupFileError(`Group "${name}" contains an invalid skill ID.`);
       }
       if (seen.has(skillId)) continue;
       seen.add(skillId);

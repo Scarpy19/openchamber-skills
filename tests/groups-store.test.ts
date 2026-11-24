@@ -33,16 +33,16 @@ test('group config is written atomically with 0600 permissions', async (t) => {
 
   const saved = await writeGroups(home, {
     version: 1,
-    groups: [{ id: 'custom-daily', name: '日常开发', skillIds: ['alpha', 'beta'] }],
+    groups: [{ id: 'custom-daily', name: 'Daily Development', skillIds: ['alpha', 'beta'] }],
   });
-  assert.deepEqual(saved.groups, [{ id: 'custom-daily', name: '日常开发', skillIds: ['alpha', 'beta'] }]);
+  assert.deepEqual(saved.groups, [{ id: 'custom-daily', name: 'Daily Development', skillIds: ['alpha', 'beta'] }]);
 
   const file = groupsPath(home);
-  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);
   const raw = JSON.parse(await readFile(file, 'utf8')) as { version: number; groups: unknown[] };
   assert.equal(raw.version, 1);
   assert.equal(raw.groups.length, 1);
-  assert.deepEqual((await readGroups(home)).groups[0].name, '日常开发');
+  assert.deepEqual((await readGroups(home)).groups[0].name, 'Daily Development');
 });
 
 test('a corrupt group file is reported and left untouched', async (t) => {
@@ -66,13 +66,13 @@ test('invalid write payloads are rejected before the file changes', async (t) =>
 
   await writeGroups(home, {
     version: 1,
-    groups: [{ id: 'custom-daily', name: '日常开发', skillIds: ['alpha'] }],
+    groups: [{ id: 'custom-daily', name: 'Daily Development', skillIds: ['alpha'] }],
   });
   const file = groupsPath(home);
   const before = await readFile(file, 'utf8');
 
   await assert.rejects(
-    writeGroups(home, { version: 1, groups: [{ id: 'all', name: '全部', skillIds: ['alpha'] }] }),
+    writeGroups(home, { version: 1, groups: [{ id: 'all', name: 'All', skillIds: ['alpha'] }] }),
     (error: unknown) => error instanceof GroupError && error.status === 400,
   );
   await assert.rejects(
@@ -80,4 +80,19 @@ test('invalid write payloads are rejected before the file changes', async (t) =>
     (error: unknown) => error instanceof GroupError && error.status === 400,
   );
   assert.equal(await readFile(file, 'utf8'), before);
+});
+
+test('an explicit service data directory replaces the legacy config path', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'skills-groups-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const dataDir = path.join(home, 'service-data');
+
+  await writeGroups(home, {
+    version: 1,
+    groups: [{ id: 'custom-one', name: 'One', skillIds: ['alpha'] }],
+  }, dataDir);
+
+  assert.equal(await exists(path.join(dataDir, 'groups.json')), true);
+  assert.equal(await exists(groupsPath(home)), false);
+  assert.equal((await readGroups(home, dataDir)).groups[0]?.name, 'One');
 });

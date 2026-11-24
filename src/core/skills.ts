@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type {
   BatchResponse,
   BulkResponse,
@@ -14,8 +14,8 @@ import type {
   SkillsResponse,
   Summary,
 } from '../shared/types.ts';
+import { resolveSources, scanConfig, type ScanConfig, type SkillSource } from './sources.ts';
 
-const ROOT_DIR = ['.config', 'opencode', 'skills'] as const;
 const MAX_DEPTH = 6;
 const MAX_SKILL_BYTES = 2_000_000;
 const IGNORED_DIRS = new Set(['node_modules', '.git', '.svn', '.hg']);
@@ -40,11 +40,11 @@ type Frontmatter = {
 
 type Entry = {
   id: string;
+  source: SkillSource;
   activePath: string | null;
   disabledPath: string | null;
   frontmatter: Frontmatter;
   error: string | null;
-  hash: string;
 };
 
 type Move = { id: string; from: string; to: string };
@@ -67,11 +67,14 @@ export class SkillsError extends Error {
 
 const describeFs = (error: unknown): string => {
   const code = (error as NodeJS.ErrnoException).code;
-  if (code === 'EACCES' || code === 'EPERM') return '权限不足';
-  if (code === 'ENOENT') return '路径不存在';
-  if (code === 'ENOTDIR') return '不是目录';
-  if (code === 'EISDIR') return '是目录';
-  return error instanceof Error ? error.message : '文件系统错误';
+  if (code === 'EBUSY' || code === 'EPERM') {
+    return 'The file is locked or permission was denied. Close it in other applications and rescan.';
+  }
+  if (code === 'EACCES') return 'Permission denied';
+  if (code === 'ENOENT') return 'Path does not exist';
+  if (code === 'ENOTDIR') return 'Not a directory';
+  if (code === 'EISDIR') return 'Is a directory';
+  return error instanceof Error ? error.message : 'File system error';
 };
 
 const parseBoolean = (value: string): boolean | undefined => {
@@ -90,6 +93,22 @@ const unquote = (value: string): string => {
     return text.slice(1, -1).replace(/''/g, "'");
   }
   return text;
+};
+
+/** Removes an unquoted YAML comment from a scalar value. */
+const stripComment = (value: string): string => {
+  let quote: string | null = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? '';
+    if (quote) {
+      if (char === quote && value[index - 1] !== '\\') quote = null;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '#' && (index === 0 || /\s/.test(value[index - 1] ?? ''))) {
+      return value.slice(0, index).trimEnd();
+    }
+  }
+  return value;
 };
 
 const fallbackFrontmatter = (id: string): Frontmatter => ({
@@ -132,7 +151,7 @@ export const parseFrontmatter = (text: string, id: string): Frontmatter => {
     const match = /^([^:]+):\s*(.*)$/.exec(line);
     if (!match) continue;
     const key = (match[1] ?? '').trim().replace(/^["']|["']$/g, '');
-    const raw = (match[2] ?? '').trim();
+    const raw = stripComment((match[2] ?? '').trim());
 
     if (key === 'name' || key === 'description') {
       let value = raw;
@@ -194,14 +213,27 @@ export const parseFrontmatter = (text: string, id: string): Frontmatter => {
   };
 };
 
-const rootView = async (home: string): Promise<RootView> => {
-  const root = path.join(home, ...ROOT_DIR);
+const rootView = async (source: SkillSource): Promise<RootView> => {
   try {
-    const info = await fs.stat(root);
-    return { path: root, exists: info.isDirectory(), error: info.isDirectory() ? null : '不是目录' };
+    const info = await fs.stat(source.path);
+    return {
+      sourceId: source.id,
+      scope: source.scope,
+      label: source.label,
+      path: source.path,
+      exists: info.isDirectory(),
+      error: info.isDirectory() ? null : 'Not a directory',
+    };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    return { path: root, exists: false, error: code === 'ENOENT' ? null : describeFs(error) };
+    return {
+      sourceId: source.id,
+      scope: source.scope,
+      label: source.label,
+      path: source.path,
+      exists: false,
+      error: code === 'ENOENT' ? null : describeFs(error),
+    };
   }
 };
 
@@ -221,15 +253,15 @@ const readFrontmatterFor = async (
   id: string,
   activePath: string | null,
   disabledPath: string | null,
-): Promise<{ frontmatter: Frontmatter; error: string | null; hash: string }> => {
+): Promise<{ frontmatter: Frontmatter; error: string | null }> => {
   let activeError: string | null = null;
   if (activePath) {
     try {
       const info = await fs.stat(activePath);
-      if (info.size > MAX_SKILL_BYTES) activeError = '入口文件超过 2 MB';
+      if (info.size > MAX_SKILL_BYTES) activeError = 'The entry file exceeds 2 MB';
       else {
         const text = await fs.readFile(activePath, 'utf8');
-        return { frontmatter: parseFrontmatter(text, id), error: null, hash: createHash('sha256').update(text).digest('hex') };
+        return { frontmatter: parseFrontmatter(text, id), error: null };
       }
     } catch (error) {
       activeError = describeFs(error);
@@ -239,19 +271,20 @@ const readFrontmatterFor = async (
     try {
       const info = await fs.stat(disabledPath);
       if (info.size > MAX_SKILL_BYTES) {
-        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? '停用入口超过 2 MB', hash: '' };
+        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? 'The disabled entry exceeds 2 MB' };
       }
       const text = await fs.readFile(disabledPath, 'utf8');
-      return { frontmatter: parseFrontmatter(text, id), error: activeError, hash: createHash('sha256').update(text).digest('hex') };
+      return { frontmatter: parseFrontmatter(text, id), error: activeError };
     } catch (error) {
-      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error), hash: '' };
+      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error) };
     }
   }
-  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? '无法读取入口文件', hash: '' };
+  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? 'Could not read the entry file' };
 };
 
 const scanDirectory = async (
   root: RootView,
+  source: SkillSource,
   directory: string,
   depth: number,
   entries: Entry[],
@@ -261,7 +294,7 @@ const scanDirectory = async (
   try {
     dirents = await fs.readdir(directory, { withFileTypes: true });
   } catch (error) {
-    if (!root.error) root.error = `无法读取 ${directory}：${describeFs(error)}`;
+    if (!root.error) root.error = `Could not read ${directory}: ${describeFs(error)}`;
     return;
   }
 
@@ -274,8 +307,8 @@ const scanDirectory = async (
     const id = path.basename(directory);
     const activePath = active ? path.join(directory, 'SKILL.md') : null;
     const disabledPath = disabled ? path.join(directory, 'SKILL.md.disabled') : null;
-    const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
-    entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
+    const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
+    entries.push({ id, source, activePath, disabledPath, frontmatter, error });
     if (active) return;
   }
 
@@ -298,8 +331,8 @@ const scanDirectory = async (
       const activePath = activeItem ? path.join(directory, activeItem.entry.name) : null;
       const disabledPath = disabledItem ? path.join(directory, disabledItem.entry.name) : null;
       if (!activePath && !disabledPath) continue;
-      const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
-      entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
+      const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
+      entries.push({ id, source, activePath, disabledPath, frontmatter, error });
     }
   }
 
@@ -314,7 +347,7 @@ const scanDirectory = async (
     }
     if (visited.has(real)) continue;
     visited.add(real);
-    await scanDirectory(root, child, depth + 1, entries, visited);
+    await scanDirectory(root, source, child, depth + 1, entries, visited);
   }
 };
 
@@ -328,17 +361,29 @@ const addConflict = (conflicts: ConflictView[], seen: Set<string>, conflict: Con
 const estimateTokens = (name: string, id: string, description: string): number =>
   Math.max(1, Math.ceil((name.length + id.length + description.length) / 4) + 8);
 
-const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
+const compareText = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
+
+const buildResponse = (
+  roots: RootView[],
+  entries: Entry[],
+  projectDirectory: string | null,
+): SkillsResponse => {
   const groups = new Map<string, Entry[]>();
   for (const entry of entries) {
-    const group = groups.get(entry.id);
+    const key = `${entry.source.id}:${entry.id}`;
+    const group = groups.get(key);
     if (group) group.push(entry);
-    else groups.set(entry.id, [entry]);
+    else groups.set(key, [entry]);
   }
 
   const skills: SkillView[] = [];
-  for (const [id, group] of groups) {
-    group.sort((left, right) => (left.activePath ?? left.disabledPath ?? '').localeCompare(right.activePath ?? right.disabledPath ?? ''));
+  for (const [key, group] of groups) {
+    const id = group[0]?.id ?? key;
+    const source = group[0]?.source;
+    group.sort((left, right) =>
+      right.source.priority - left.source.priority ||
+      compareText(left.activePath ?? left.disabledPath ?? '', right.activePath ?? right.disabledPath ?? ''),
+    );
     const active = group.filter((entry) => entry.activePath);
     const disabled = group.filter((entry) => entry.disabledPath);
     const loadable = active.filter((entry) => !entry.error && entry.frontmatter.valid && !entry.frontmatter.empty);
@@ -358,8 +403,8 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
       if (entry.activePath && entry.disabledPath) {
         addConflict(conflicts, seen, {
           kind: 'both',
-          skillId: id,
-          message: '同一目录同时存在启用和停用入口，需要先选择保留哪一个。',
+          skillId: key,
+          message: 'Both an enabled and a disabled entry exist in the same directory. Choose which one to keep first.',
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: true,
@@ -368,8 +413,8 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
       if (entry.error) {
         addConflict(conflicts, seen, {
           kind: 'read-error',
-          skillId: id,
-          message: `无法读取入口：${entry.error}`,
+          skillId: key,
+          message: `Could not read the entry: ${entry.error}`,
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false,
@@ -378,8 +423,8 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
       if (!entry.frontmatter.valid) {
         addConflict(conflicts, seen, {
           kind: 'invalid',
-          skillId: id,
-          message: 'frontmatter 未闭合，OpenCode 可能跳过此技能；入口开关仍可用。',
+          skillId: key,
+          message: 'The frontmatter is not closed; OpenCode may skip this skill, but the entry switch still works.',
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false,
@@ -388,8 +433,8 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
       if (entry.frontmatter.empty) {
         addConflict(conflicts, seen, {
           kind: 'empty',
-          skillId: id,
-          message: '入口文件为空，OpenCode 不会加载它。',
+          skillId: key,
+          message: 'The entry file is empty; OpenCode will not load it.',
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false,
@@ -398,12 +443,12 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
     }
     if (group.length > 1) {
       const winnerLabel = winner
-        ? winner.activePath ?? winner.disabledPath ?? '未知入口'
-        : '无（入口不可加载）';
+        ? winner.activePath ?? winner.disabledPath ?? 'Unknown entry'
+        : 'None (entry cannot be loaded)';
       addConflict(conflicts, seen, {
         kind: 'duplicate',
-        skillId: id,
-        message: `同 ID 有 ${group.length} 个入口；生效入口：${winnerLabel}。`,
+        skillId: key,
+        message: `There are ${group.length} entries with this ID; the effective entry is ${winnerLabel}.`,
         activePath: winner?.activePath ?? null,
         disabledPath: winner?.disabledPath ?? null,
         blocking: false,
@@ -412,8 +457,8 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
     if (winner?.activePath && winner.frontmatter.autoInvokeOff) {
       addConflict(conflicts, seen, {
         kind: 'manual',
-        skillId: id,
-        message: '入口已启用，但标记为仅手动调用；模型看不到它。',
+        skillId: key,
+        message: 'The entry is enabled but marked for manual invocation only; the model cannot see it.',
         activePath: winner.activePath,
         disabledPath: winner.disabledPath,
         blocking: false,
@@ -422,8 +467,8 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
     if (winner?.activePath && !winner.error && winner.frontmatter.valid && !winner.frontmatter.empty && !winner.frontmatter.description.trim()) {
       addConflict(conflicts, seen, {
         kind: 'no-description',
-        skillId: id,
-        message: '入口已启用，但没有 description；模型不会自动选用。',
+        skillId: key,
+        message: 'The entry is enabled but has no description; the model will not select it automatically.',
         activePath: winner.activePath,
         disabledPath: winner.disabledPath,
         blocking: false,
@@ -442,7 +487,11 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
     const name = winner?.frontmatter.name || id;
     const description = winner?.frontmatter.description ?? '';
     skills.push({
+      key,
       id,
+      scope: source?.scope ?? 'global',
+      sourceId: source?.id ?? 'opencode-global',
+      rootPath: source?.path ?? '',
       name,
       description,
       state,
@@ -453,16 +502,15 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
       conflicts,
       warnings: Array.from(new Set(conflicts.filter((conflict) => !conflict.blocking).map((conflict) => conflict.message))),
       estimatedTokens: advertised ? estimateTokens(name, id, description) : 0,
-      contentHash: winner?.hash ?? group[0]?.hash ?? '',
     });
   }
 
-  skills.sort((left, right) => left.id.localeCompare(right.id));
+  skills.sort((left, right) => compareText(left.key, right.key));
   const conflicts = skills.flatMap((skill) => skill.conflicts);
   conflicts.sort((left, right) => {
     if (left.blocking !== right.blocking) return left.blocking ? -1 : 1;
     const kind = CONFLICT_ORDER[left.kind] - CONFLICT_ORDER[right.kind];
-    return kind !== 0 ? kind : left.skillId.localeCompare(right.skillId);
+    return kind !== 0 ? kind : compareText(left.skillId, right.skillId);
   });
   const summary: Summary = {
     total: skills.length,
@@ -472,22 +520,57 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
     warnings: conflicts.filter((conflict) => !conflict.blocking).length,
     estimatedTokens: skills.reduce((sum, skill) => sum + skill.estimatedTokens, 0),
   };
-  return { skills, conflicts, summary, root, scannedAt: Date.now() };
+  return {
+    skills,
+    conflicts,
+    summary,
+    root: roots[0] ?? {
+      sourceId: 'opencode-global',
+      scope: 'global',
+      label: 'Global OpenCode',
+      path: '',
+      exists: false,
+      error: null,
+    },
+    roots,
+    projectDirectory,
+    scannedAt: Date.now(),
+  };
 };
 
-export const scanSkills = async (home: string): Promise<SkillsResponse> => {
-  const root = await rootView(home);
+export const scanSkills = async (value: string | ScanConfig): Promise<SkillsResponse> => {
+  const config = scanConfig(value);
+  const sources = resolveSources(config);
+  const roots = await Promise.all(sources.map((source) => rootView(source)));
   const entries: Entry[] = [];
-  if (root.exists) {
+  for (const [index, root] of roots.entries()) {
+    const source = sources[index];
+    if (!root.exists || !source) continue;
     const visited = new Set<string>();
     try {
       visited.add(await fs.realpath(root.path));
     } catch {
       visited.add(root.path);
     }
-    await scanDirectory(root, root.path, 0, entries, visited);
+    await scanDirectory(root, source, root.path, 0, entries, visited);
   }
-  return buildResponse(root, entries);
+  return buildResponse(roots, entries, config.projectDirectory ?? null);
+};
+
+/** Accepts a scope-qualified key or a bare ID when it is unambiguous. */
+export const findSkill = (skills: readonly SkillView[], idOrKey: string): SkillView => {
+  const exact = skills.find((skill) => skill.key === idOrKey);
+  if (exact) return exact;
+  const matches = skills.filter((skill) => skill.id === idOrKey);
+  if (matches.length === 1 && matches[0]) return matches[0];
+  if (matches.length > 1) {
+    throw new SkillsError(
+      'ambiguous',
+      400,
+      `Several sources have a skill named "${idOrKey}": ${matches.map((skill) => skill.key).join(', ')}.`,
+    );
+  }
+  throw new SkillsError('not-found', 404, `Skill ${idOrKey} was not found.`);
 };
 
 const exists = async (file: string): Promise<boolean> => {
@@ -505,27 +588,27 @@ const applyMoves = async (moves: Move[]): Promise<void> => {
   try {
     for (const move of moves) {
       if (await exists(move.to)) {
-        throw new SkillsError('conflict', 409, `目标入口已存在：${move.to}`);
+        throw new SkillsError('conflict', 409, `The target entry already exists: ${move.to}`);
       }
       if (!(await exists(move.from))) {
-        throw new SkillsError('conflict', 409, `入口已变化，请重新扫描：${move.from}`);
+        throw new SkillsError('conflict', 409, `The entry changed. Rescan: ${move.from}`);
       }
     }
   } catch (error) {
     if (error instanceof SkillsError) throw error;
-    throw new SkillsError('io', 500, `检查入口失败：${describeFs(error)}`);
+    throw new SkillsError('io', 500, `Could not inspect the entry: ${describeFs(error)}`);
   }
 
   const done: Move[] = [];
   try {
     for (const move of moves) {
       if (await exists(move.to)) {
-        throw new SkillsError('conflict', 409, `目标入口已存在：${move.to}`);
+        throw new SkillsError('conflict', 409, `The target entry already exists: ${move.to}`);
       }
       await fs.rename(move.from, move.to);
       done.push(move);
       if ((await exists(move.from)) || !(await exists(move.to))) {
-        throw new SkillsError('io', 500, `改名后校验失败：${move.to}`);
+        throw new SkillsError('io', 500, `Verification failed after renaming: ${move.to}`);
       }
     }
   } catch (error) {
@@ -536,23 +619,28 @@ const applyMoves = async (moves: Move[]): Promise<void> => {
       }
     }
     if (error instanceof SkillsError) throw error;
-    throw new SkillsError('io', 500, `改名失败：${describeFs(error)}`);
+    throw new SkillsError('io', 500, `Rename failed: ${describeFs(error)}`);
   }
 };
 
 const assertRootReadable = (scan: SkillsResponse): void => {
-  if (scan.root.error) {
-    throw new SkillsError('read-error', 409, `技能目录无法读取：${scan.root.error}`);
+  const broken = scan.roots.find((root) => root.error);
+  if (broken) {
+    throw new SkillsError('read-error', 409, `Could not read the ${broken.label} skill directory: ${broken.error}`);
   }
 };
 
-export const setSkillEnabled = async (home: string, id: string, enabled: boolean): Promise<SkillsResponse> => {
-  const before = await scanSkills(home);
+export const setSkillEnabled = async (
+  value: string | ScanConfig,
+  id: string,
+  enabled: boolean,
+): Promise<SkillsResponse> => {
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
-  const skill = before.skills.find((item) => item.id === id);
-  if (!skill) throw new SkillsError('not-found', 404, `没有找到技能 ${id}`);
+  const skill = findSkill(before.skills, id);
   if (skill.conflicts.some((conflict) => conflict.kind === 'both')) {
-    throw new SkillsError('conflict', 409, `技能 ${id} 有未解决的入口冲突。`, skill.conflicts);
+    throw new SkillsError('conflict', 409, `Skill ${id} has unresolved entry conflicts.`, skill.conflicts);
   }
 
   const moves: Move[] = [];
@@ -563,41 +651,42 @@ export const setSkillEnabled = async (home: string, id: string, enabled: boolean
   } else {
     for (const disabledPath of skill.disabledPaths) {
       if (!disabledPath.endsWith('.disabled')) {
-        throw new SkillsError('io', 500, `无法识别停用入口：${disabledPath}`);
+        throw new SkillsError('io', 500, `Could not identify the disabled entry: ${disabledPath}`);
       }
       moves.push({ id, from: disabledPath, to: disabledPath.slice(0, -'.disabled'.length) });
     }
   }
   if (moves.length > 0) await applyMoves(moves);
-  return scanSkills(home);
+  return scanSkills(config);
 };
 
 export const batchSetEnabled = async (
-  home: string,
+  value: string | ScanConfig,
   enable: string[],
   disable: string[],
 ): Promise<BatchResponse> => {
-  const before = await scanSkills(home);
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
   const enableIds = Array.from(new Set(enable));
   const disableIds = Array.from(new Set(disable));
   if (enableIds.some((id) => disableIds.includes(id))) {
-    throw new SkillsError('invalid-request', 400, '同一个技能不能同时启用和关闭。');
+    throw new SkillsError('invalid-request', 400, 'A skill cannot be enabled and disabled at the same time.');
   }
   if (enableIds.length + disableIds.length > 200) {
-    throw new SkillsError('invalid-request', 400, '一次处理的技能过多。');
+    throw new SkillsError('invalid-request', 400, 'Too many skills in one operation.');
   }
-  const byId = new Map(before.skills.map((skill) => [skill.id, skill]));
+  const selected = new Map<string, SkillView>();
   for (const id of [...enableIds, ...disableIds]) {
-    const skill = byId.get(id);
-    if (!skill) throw new SkillsError('not-found', 404, `没有找到技能 ${id}`);
+    const skill = findSkill(before.skills, id);
     if (skill.conflicts.some((conflict) => conflict.kind === 'both')) {
-      throw new SkillsError('conflict', 409, `技能 ${id} 有未解决的入口冲突。`, skill.conflicts);
+      throw new SkillsError('conflict', 409, `Skill ${id} has unresolved entry conflicts.`, skill.conflicts);
     }
+    selected.set(id, skill);
   }
   const moves: Move[] = [];
   for (const id of enableIds) {
-    const skill = byId.get(id);
+    const skill = selected.get(id);
     if (!skill) continue;
     for (const disabledPath of skill.disabledPaths) {
       if (!disabledPath.endsWith('.disabled')) continue;
@@ -605,54 +694,59 @@ export const batchSetEnabled = async (
     }
   }
   for (const id of disableIds) {
-    const skill = byId.get(id);
+    const skill = selected.get(id);
     if (!skill) continue;
     for (const activePath of skill.activePaths) {
       moves.push({ id, from: activePath, to: `${activePath}.disabled` });
     }
   }
   if (moves.length > 0) await applyMoves(moves);
-  const after = await scanSkills(home);
+  const after = await scanSkills(config);
   return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
 };
 
-export const bulkSetEnabled = async (home: string, enabled: boolean): Promise<BulkResponse> => {
-  const before = await scanSkills(home);
+export const bulkSetEnabled = async (
+  value: string | ScanConfig,
+  enabled: boolean,
+): Promise<BulkResponse> => {
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
   const blocking = before.conflicts.filter((conflict) => conflict.kind === 'both');
   if (blocking.length > 0) {
-    throw new SkillsError('conflict', 409, '还有未解决的入口冲突，不能批量操作。', blocking);
+    throw new SkillsError('conflict', 409, 'Unresolved entry conflicts remain; bulk operations are blocked.', blocking);
   }
 
   const moves: Move[] = [];
   for (const skill of before.skills) {
     if (!enabled) {
       for (const activePath of skill.activePaths) {
-        moves.push({ id: skill.id, from: activePath, to: `${activePath}.disabled` });
+        moves.push({ id: skill.key, from: activePath, to: `${activePath}.disabled` });
       }
     } else {
       for (const disabledPath of skill.disabledPaths) {
         if (!disabledPath.endsWith('.disabled')) continue;
-        moves.push({ id: skill.id, from: disabledPath, to: disabledPath.slice(0, -'.disabled'.length) });
+        moves.push({ id: skill.key, from: disabledPath, to: disabledPath.slice(0, -'.disabled'.length) });
       }
     }
   }
   if (moves.length > 0) await applyMoves(moves);
-  const after = await scanSkills(home);
+  const after = await scanSkills(config);
   return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
 };
 
 export const resolveBoth = async (
-  home: string,
+  value: string | ScanConfig,
   entryPath: string,
   keep: Keep,
 ): Promise<ResolveResponse> => {
-  const before = await scanSkills(home);
+  const config = scanConfig(value);
+  const before = await scanSkills(config);
   assertRootReadable(before);
   const skill = before.skills.find((item) =>
     item.activePaths.includes(entryPath) || item.disabledPaths.includes(entryPath),
   );
-  if (!skill) throw new SkillsError('not-found', 404, '没有找到这个入口冲突，请重新扫描。');
+  if (!skill) throw new SkillsError('not-found', 404, 'This entry conflict was not found. Rescan.');
   let activePath: string | null = null;
   let disabledPath: string | null = null;
   if (skill.activePaths.includes(entryPath)) {
@@ -668,24 +762,24 @@ export const resolveBoth = async (
     !skill.activePaths.includes(activePath) ||
     !skill.disabledPaths.includes(disabledPath)
   ) {
-    throw new SkillsError('not-found', 404, '没有找到这个入口冲突，请重新扫描。');
+    throw new SkillsError('not-found', 404, 'This entry conflict was not found. Rescan.');
   }
 
   const backupPath = `${disabledPath}.conflict-${Date.now()}-${randomUUID().slice(0, 8)}`;
   if (keep === 'enabled') {
-    await applyMoves([{ id: skill.id, from: disabledPath, to: backupPath }]);
+    await applyMoves([{ id: skill.key, from: disabledPath, to: backupPath }]);
   } else {
-    await applyMoves([{ id: skill.id, from: disabledPath, to: backupPath }]);
+    await applyMoves([{ id: skill.key, from: disabledPath, to: backupPath }]);
     try {
-      await applyMoves([{ id: skill.id, from: activePath, to: disabledPath }]);
+      await applyMoves([{ id: skill.key, from: activePath, to: disabledPath }]);
     } catch (error) {
       try {
-        await applyMoves([{ id: skill.id, from: backupPath, to: disabledPath }]);
+        await applyMoves([{ id: skill.key, from: backupPath, to: disabledPath }]);
       } catch {
       }
       throw error;
     }
   }
-  const after = await scanSkills(home);
+  const after = await scanSkills(config);
   return { ...after, backupPath };
 };

@@ -1,15 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { SkillView, TranslationEntry } from '../src/shared/types.ts';
+import type { SkillView } from '../src/shared/types.ts';
 import {
   filterAndSortSkills,
   isAttentionSkill,
   matchesSkillQuery,
   matchesSkillStateFilter,
+  planInvertSkills,
 } from '../src/shared/filter.ts';
 
 const makeSkill = (overrides: Partial<SkillView> & Pick<SkillView, 'id' | 'name'>): SkillView => ({
+  key: overrides.key ?? overrides.id,
   id: overrides.id,
+  scope: overrides.scope ?? 'global',
+  sourceId: overrides.sourceId ?? 'opencode-global',
+  rootPath: overrides.rootPath ?? '/tmp/skills',
   name: overrides.name,
   description: overrides.description ?? `${overrides.name} description`,
   state: overrides.state ?? 'enabled',
@@ -20,7 +25,6 @@ const makeSkill = (overrides: Partial<SkillView> & Pick<SkillView, 'id' | 'name'
   conflicts: overrides.conflicts ?? [],
   warnings: overrides.warnings ?? [],
   estimatedTokens: overrides.estimatedTokens ?? 120,
-  contentHash: overrides.contentHash ?? `hash-${overrides.id}`,
 });
 
 test('state filter separates enabled, disabled, and attention skills', () => {
@@ -40,28 +44,26 @@ test('state filter separates enabled, disabled, and attention skills', () => {
   assert.equal(matchesSkillStateFilter(conflicted, 'attention'), true);
 });
 
-test('filterAndSortSkills searches original + Chinese translations and sorts by tokens descending', () => {
+test('search matches id, name, description, and warnings', () => {
+  const skill = makeSkill({
+    id: 'zeta',
+    name: 'Zeta Heavy',
+    description: 'Refactors large SwiftUI views',
+    warnings: ['Entry is enabled but has no description'],
+  });
+  assert.equal(matchesSkillQuery(skill, 'zeta'), true);
+  assert.equal(matchesSkillQuery(skill, 'SWIFTUI'), true);
+  assert.equal(matchesSkillQuery(skill, 'no description'), true);
+  assert.equal(matchesSkillQuery(skill, 'missing-text'), false);
+  assert.equal(matchesSkillQuery(skill, '   '), true);
+});
+
+test('filterAndSortSkills sorts by tokens, name, and state', () => {
   const skills: SkillView[] = [
     makeSkill({ id: 'alpha', name: 'Alpha', estimatedTokens: 90 }),
     makeSkill({ id: 'zeta', name: 'Zeta Heavy', estimatedTokens: 640 }),
-    makeSkill({ id: 'beta', name: 'Beta Warn', estimatedTokens: 210, warnings: ['入口已启用，但没有 description'] }),
+    makeSkill({ id: 'beta', name: 'Beta Warn', estimatedTokens: 210, warnings: ['Entry is enabled but has no description'] }),
   ];
-  const translations: Record<string, TranslationEntry> = {
-    zeta: {
-      hash: 'hash-zeta',
-      nameZh: '大型架构技能',
-      descriptionZh: '用于梳理大型模块边界',
-      updatedAt: 1,
-    },
-  };
-
-  const byZh = filterAndSortSkills(skills, {
-    query: '架构',
-    stateFilter: 'all',
-    sortMode: 'default',
-    getTranslation: (skill) => translations[skill.id] ?? null,
-  });
-  assert.deepEqual(byZh.map((skill) => skill.id), ['zeta']);
 
   const byTokens = filterAndSortSkills(skills, {
     query: '',
@@ -70,5 +72,55 @@ test('filterAndSortSkills searches original + Chinese translations and sorts by 
   });
   assert.deepEqual(byTokens.map((skill) => skill.id), ['zeta', 'beta', 'alpha']);
 
-  assert.equal(matchesSkillQuery(skills[2], 'description', null), true);
+  const byName = filterAndSortSkills(skills, {
+    query: '',
+    stateFilter: 'all',
+    sortMode: 'name',
+  });
+  assert.deepEqual(byName.map((skill) => skill.id), ['alpha', 'beta', 'zeta']);
+
+  const attention = filterAndSortSkills(skills, {
+    query: 'entry',
+    stateFilter: 'attention',
+    sortMode: 'default',
+  });
+  assert.deepEqual(attention.map((skill) => skill.id), ['beta']);
+});
+
+test('source filter separates global and project skills', () => {
+  const skills: SkillView[] = [
+    makeSkill({ id: 'alpha', name: 'Global Alpha', key: 'opencode-global:alpha', scope: 'global' }),
+    makeSkill({ id: 'alpha', name: 'Project Alpha', key: 'opencode-project:alpha', scope: 'project' }),
+  ];
+  const options = { query: '', stateFilter: 'all' as const, sortMode: 'default' as const };
+  assert.deepEqual(
+    filterAndSortSkills(skills, { ...options, sourceFilter: 'global' }).map((skill) => skill.key),
+    ['opencode-global:alpha'],
+  );
+  assert.deepEqual(
+    filterAndSortSkills(skills, { ...options, sourceFilter: 'project' }).map((skill) => skill.key),
+    ['opencode-project:alpha'],
+  );
+});
+
+test('planInvertSkills flips simple states and skips ambiguous entries', () => {
+  const skills: SkillView[] = [
+    makeSkill({ id: 'on', name: 'On', state: 'enabled', key: 'opencode-global:on' }),
+    makeSkill({ id: 'off', name: 'Off', state: 'disabled', advertised: false, key: 'opencode-project:off', scope: 'project' }),
+    makeSkill({ id: 'mixed', name: 'Mixed', state: 'mixed', advertised: false }),
+    makeSkill({ id: 'bad', name: 'Bad', state: 'conflict', advertised: false }),
+  ];
+  assert.deepEqual(planInvertSkills(skills), { enable: ['opencode-project:off'], disable: ['opencode-global:on'] });
+  assert.deepEqual(planInvertSkills([]), { enable: [], disable: [] });
+});
+
+test('state sort puts conflicts first and disabled skills last', () => {
+  const skills: SkillView[] = [
+    makeSkill({ id: 'off', name: 'Off', state: 'disabled', advertised: false }),
+    makeSkill({ id: 'ok', name: 'Ok', state: 'enabled' }),
+    makeSkill({ id: 'bad', name: 'Bad', state: 'conflict', advertised: false }),
+    makeSkill({ id: 'mixed', name: 'Mixed', state: 'mixed', advertised: false }),
+  ];
+  const sorted = filterAndSortSkills(skills, { query: '', stateFilter: 'all', sortMode: 'state' });
+  assert.deepEqual(sorted.map((skill) => skill.id), ['bad', 'mixed', 'ok', 'off']);
 });
