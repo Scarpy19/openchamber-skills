@@ -8,7 +8,6 @@ import {
   scanSkills,
   setSkillEnabled,
 } from '../core/skills.ts';
-import { GroupError, readGroups, writeGroups } from '../core/groups.ts';
 import { normalizeProjectDirectory, type ScanConfig } from '../core/sources.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -19,7 +18,6 @@ if (!port || !token) {
 }
 
 const HOME = os.homedir();
-const DATA_DIR = process.env.OPENCHAMBER_SERVICE_DATA_DIR || undefined;
 
 const json = (res: http.ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, {
@@ -138,15 +136,6 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, await exclusive(() => batchSetEnabled(config, enable, disable)));
     return;
   }
-  if (url.pathname === '/groups' && req.method === 'GET') {
-    json(res, 200, await exclusive(() => readGroups(HOME, DATA_DIR)));
-    return;
-  }
-  if (url.pathname === '/groups' && req.method === 'POST') {
-    const body = await readBody(req);
-    json(res, 200, await exclusive(() => writeGroups(HOME, body, DATA_DIR)));
-    return;
-  }
   if (url.pathname === '/skills/resolve' && req.method === 'POST') {
     const body = await readBody(req);
     const entryPath = pathField(body, 'path', 4096);
@@ -162,7 +151,7 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
 const server = http.createServer((req, res) => {
   void handle(req, res).catch((error: unknown) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError || error instanceof GroupError) {
+    if (error instanceof SkillsError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,

@@ -16,7 +16,6 @@ Based on [openchamber-skills](https://github.com/chenyuhao0628/openchamber-skill
 - Search by name, description, warning, scope, or ID; press `/` to focus the search field and `Esc` to clear a pending action.
 - Filter by state (All, Enabled, Disabled, Needs attention) and source (All, Global, Project). Sort by default order, estimated tokens, name, or attention level.
 - Use **List actions** to copy the qualified IDs of the current view or invert the visible enabled/disabled skills. Ambiguous entries are skipped.
-- Create and edit reusable groups with a member filter, step ordering, and safe example-group import. Group actions can enable, disable, or isolate a group.
 - Review a live summary of visible skills, disabled skills, conflicts, warnings, estimated tokens, the detected source directories, and the last scan time.
 - Runs as a loopback-only local service with Bearer-token checks. The service runs with the user's full permissions; the manifest declares no external network integration, executables, or sockets.
 
@@ -54,7 +53,7 @@ The same skill ID can exist globally and in a project. Each entry therefore has 
 | `claude-project:alpha` | `<project>/.claude/skills/alpha` |
 | `agents-project:alpha` | `<project>/.agents/skills/alpha` |
 
-The panel shows the short ID plus a **Global** or **Project** badge, and the source label on each row. Copy actions and group memberships use qualified IDs so global and project copies never become ambiguous. The service also accepts a bare ID when only one source has that ID; otherwise it reports an ambiguity error.
+The panel shows the short ID plus a **Global** or **Project** badge, and the source label on each row. Copy actions use qualified IDs so global and project copies never become ambiguous. The service also accepts a bare ID when only one source has that ID; otherwise it reports an ambiguity error.
 
 ## Panel guide
 
@@ -72,27 +71,6 @@ Use the toolbar to:
 - Open **List actions** to:
   - **Copy visible IDs** to the clipboard as qualified IDs, one per line.
   - **Invert visible skills**, with an in-place confirmation showing how many entries will be enabled and disabled.
-
-### Groups
-
-Groups are panel metadata, not skills, so they do not add model context. Fresh installs start with no groups. Click **Edit groups** to create, rename, reorder, or delete groups, or to import the six bundled examples. Existing group names and IDs are never overwritten by an import.
-
-| Example group | Members |
-| --- | --- |
-| macOS UI | appkit-interop, swiftui-patterns, window-management, liquid-glass, view-refactor |
-| macOS Build | build-run-debug, test-triage, swiftpm-macos, signing-entitlements, packaging-notarization, telemetry |
-| Reverse Engineering | reverse-engineering-unpacking, kuna-decompiler, reverse-engineer-anything |
-| Cloudflare | cloudflare, workers-best-practices, wrangler |
-| Video | yichen-jianying-edit |
-| Browser | browser-skill |
-
-- Group chips show the number of available members; narrow panels use a native dropdown instead.
-- Selecting a group shows only its members with step numbers in the saved order.
-- **Enable group** and **Disable group** affect only that group.
-- **Enable only this group** also disables file skills outside the group and asks for confirmation.
-- Group operations are blocked when the group has conflicts or missing members.
-
-When the host sets `OPENCHAMBER_SERVICE_DATA_DIR`, groups are stored in `<data-dir>/groups.json`; otherwise the legacy `~/.config/openchamber/skills-manager/groups.json` path is used. OpenChamber removes its extension data directory on uninstall, so back up your groups first if you want to keep them. On POSIX systems the file is written with `0600` permissions; on Windows access controls determine the effective permissions. The file supports up to 50 groups, 40-character names, unique names and IDs, and 200 members per group. A malformed or unreadable file is reported without being silently replaced.
 
 ### Conflicts
 
@@ -145,7 +123,6 @@ The built-in `opencode` and `report` skills are not file entries and cannot be d
 ## Privacy and data
 
 - Only skill entry filenames are changed. Frontmatter is read to display names and descriptions; skill bodies are not returned or logged.
-- Group settings are written atomically with restrictive permissions.
 - A disabled skill is represented by its `.disabled` file; conflict backups use `.conflict-*`. Nothing is deleted automatically.
 - Tests and the preview use temporary directories or synthetic data; no real skill content is embedded.
 
@@ -167,13 +144,11 @@ The extension follows the [OpenChamber SDK documentation](https://docs.openchamb
 | --- | --- |
 | `src/core/skills.ts` | Scanning, frontmatter, conflicts, rename transactions, bulk toggles |
 | `src/core/sources.ts` | Global/project source resolution, `XDG_CONFIG_HOME`, project-directory validation |
-| `src/core/groups.ts` | Atomic group configuration storage and data-directory override |
 | `src/service/main.ts` | Loopback HTTP service, Bearer checks, routing, serialized writes |
-| `src/panel/main.ts` | Panel UI, source detection display, filters, sorting, list actions, groups, conflict prompts |
+| `src/panel/main.ts` | Panel UI, source detection display, filters, sorting, list actions, conflict prompts |
 | `src/shared/filter.ts` | Search, state/source filters, sorting, invert planning |
-| `src/shared/groups.ts` | Example groups, merge rules, types, validation |
 | `src/shared/types.ts` | Shared panel/service data contract |
 | `src/panel/style.css` | Panel-specific styles |
 | `ui/native.css` | Host base styles inlined at build time |
 | `scripts/preview.*` | Synthetic preview harness |
-| `tests/` | Core, filter, group, storage, and service tests |
+| `tests/` | Core, filter, and service tests |

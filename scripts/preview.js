@@ -32,16 +32,6 @@ const fixtures = [
   { id: 'browser-skill', name: 'Browser Skill', description: 'Automate the logged-in Chromium browser.' },
 ];
 
-const defaultGroups = [
-  { id: 'macos-ui', name: 'macOS UI', skillIds: ['appkit-interop', 'swiftui-patterns', 'window-management', 'liquid-glass', 'view-refactor'] },
-  { id: 'macos-build', name: 'macOS Build', skillIds: ['build-run-debug', 'test-triage', 'swiftpm-macos', 'signing-entitlements', 'packaging-notarization', 'telemetry'] },
-  { id: 'reverse', name: 'Reverse Engineering', skillIds: ['reverse-engineering-unpacking', 'kuna-decompiler', 'reverse-engineer-anything'] },
-  { id: 'cloudflare', name: 'Cloudflare', skillIds: ['cloudflare', 'workers-best-practices', 'wrangler'] },
-  { id: 'video', name: 'Video', skillIds: ['yichen-jianying-edit'] },
-  { id: 'browser', name: 'Browser', skillIds: ['browser-skill'] },
-];
-let groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
-
 const initialStates = () => {
   const states = Object.fromEntries(fixtures.map((item) => [item.id, true]));
   states['view-refactor'] = false;
@@ -259,20 +249,6 @@ window.addEventListener('message', (event) => {
     reply(event.source, message.id, 200, data);
     return;
   }
-  if (method === 'GET' && route === '/groups') {
-    reply(event.source, message.id, 200, { version: 1, groups });
-    return;
-  }
-  if (method === 'POST' && route === '/groups') {
-    const input = body ? JSON.parse(body) : {};
-    if (!input || input.version !== 1 || !Array.isArray(input.groups)) {
-      reply(event.source, message.id, 400, { error: 'The group configuration format is invalid.', code: 'invalid-groups' });
-      return;
-    }
-    groups = input.groups;
-    reply(event.source, message.id, 200, { version: 1, groups });
-    return;
-  }
   if (method === 'POST' && route === '/skills/toggle') {
     const input = body ? JSON.parse(body) : {};
     const id = bareId(input.id);
@@ -346,50 +322,13 @@ buttons.clean.onclick = () => {
   mode = 'clean';
   resolved = false;
   states = initialStates();
-  groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
   show();
 };
 buttons.conflict.onclick = () => {
   mode = 'conflict';
   resolved = false;
   states = initialStates();
-  groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
   show();
-};
-document.querySelector('#group').onclick = () => {
-  const doc = frame.contentDocument;
-  const chip = doc?.querySelector('[data-group="reverse"]');
-  if (chip && chip.getClientRects().length > 0) {
-    chip.click();
-    return;
-  }
-  doc?.querySelector('.oc-sdk-trigger')?.click();
-  setTimeout(() => {
-    const option = [...(doc?.querySelectorAll('.oc-sdk-option') ?? [])].find((node) =>
-      node.textContent?.includes('Reverse Engineering'),
-    );
-    option?.click();
-  }, 50);
-};
-document.querySelector('#edit-groups').onclick = () => {
-  const button = frame.contentDocument?.querySelector('.sk-groups-edit');
-  button?.click();
-};
-document.querySelector('#save-group').onclick = async () => {
-  const doc = frame.contentDocument;
-  doc?.querySelector('.sk-groups-edit')?.click();
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  const input = doc?.querySelector('.sk-group-name');
-  const save = doc ? [...doc.querySelectorAll('button')].find((button) => button.textContent === 'Save changes') : null;
-  if (!input || !save) {
-    audit.textContent = 'Save test failed: editor controls not found';
-    return;
-  }
-  input.value = 'macOS UI Edited';
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  save.click();
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  audit.textContent = `Save test: ${groups.map((group) => group.name).join(' / ')}`;
 };
 document.querySelector('#reload').onclick = show;
 
