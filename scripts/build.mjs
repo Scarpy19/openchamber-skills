@@ -22,8 +22,8 @@ const service = {
   outfile: 'service/main.js',
   format: 'esm',
   platform: 'node',
+  mainFields: ['module', 'main'],
   target: 'node22',
-  packages: 'external',
 };
 
 if (process.argv.includes('--watch')) {

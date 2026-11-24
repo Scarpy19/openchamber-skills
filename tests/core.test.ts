@@ -168,6 +168,7 @@ test('project skills are discovered, identified and toggled without touching glo
   assert.equal(global?.scope, 'global');
   assert.equal(local?.scope, 'project');
   assert.equal(local?.rootPath, projectRoot);
+  assert.equal(local?.duplicateResolution?.status, 'unknown');
   assert.equal(claudeProject?.advertised, true);
   assert.equal(scan.projectDirectory, project);
   assert.equal(scan.roots.length, 6);
@@ -191,6 +192,44 @@ test('project skills are discovered, identified and toggled without touching glo
     setSkillEnabled(config, 'alpha', false),
     (error: unknown) => error instanceof SkillsError && error.code === 'ambiguous',
   );
+});
+
+test('discovers ancestor roots in a git worktree and reports scanned precedence', async (t) => {
+  const directory = await home(t);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const project = path.join(directory, 'workspace');
+  const nested = path.join(project, 'apps', 'web');
+  await mkdir(nested, { recursive: true });
+  await writeFile(path.join(project, '.git'), 'gitdir: elsewhere');
+  const ancestorFile = path.join(project, '.opencode', 'skills', 'alpha', 'SKILL.md');
+  const currentFile = path.join(nested, '.opencode', 'skills', 'alpha', 'SKILL.md');
+  await mkdir(path.dirname(ancestorFile), { recursive: true });
+  await mkdir(path.dirname(currentFile), { recursive: true });
+  await writeFile(ancestorFile, skillText('Ancestor', 'Ancestor skill'));
+  await writeFile(currentFile, skillText('Current', 'Current skill'));
+  const result = await scanSkills({ home: directory, projectDirectory: nested });
+  const ancestor = result.skills.find((skill) => skill.activePaths.includes(ancestorFile));
+  const current = result.skills.find((skill) => skill.activePaths.includes(currentFile));
+  assert.equal(ancestor?.duplicateResolution?.status, 'shadowed');
+  assert.equal(current?.duplicateResolution?.status, 'highest-scanned');
+  assert.equal(ancestor?.duplicateResolution?.winningPath, currentFile);
+  assert.ok(ancestor?.warnings.some((warning) => warning.includes('another enabled')));
+});
+
+test('discovers local JSONC configured skill paths with precedence over standard roots', async (t) => {
+  const directory = await home(t);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const project = path.join(directory, 'workspace');
+  const custom = path.join(project, 'team-skills', 'alpha', 'SKILL.md');
+  await mkdir(path.dirname(custom), { recursive: true });
+  await writeFile(custom, skillText('Configured', 'Configured skill'));
+  await writeFile(path.join(project, 'opencode.jsonc'), '{\n // additional skills\n "skills": ["./team-skills", "https://example.com/catalog/"],\n}');
+  await put(directory, 'alpha', skillText('Global', 'Global skill'));
+  const scan = await scanSkills({ home: directory, projectDirectory: project });
+  const configured = scan.skills.find((skill) => skill.activePaths.includes(custom));
+  assert.equal(configured?.duplicateResolution?.status, 'highest-scanned');
+  assert.equal(scan.skills.find((skill) => skill.key === 'opencode-global:alpha')?.duplicateResolution?.status, 'shadowed');
+  assert.ok(scan.roots.some((root) => root.path === path.join(project, 'team-skills')));
 });
 
 test('toggles entry documents, all duplicate copies, and restores them', async (t) => {

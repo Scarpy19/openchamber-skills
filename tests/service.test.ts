@@ -187,6 +187,35 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     assert.equal(await exists(alpha), true);
   });
 
+  await t.test('bulk undo restores unchanged files and refuses modified files', async () => {
+    const off = await call('/skills/batch', 'POST', { enable: [], disable: ['alpha'] });
+    assert.equal(off.status, 200);
+    assert.equal(off.data.undoAvailable, true);
+    const restored = await call('/skills/undo', 'POST', {});
+    assert.equal(restored.status, 200);
+    assert.equal(await exists(alpha), true);
+
+    const again = await call('/skills/batch', 'POST', { enable: [], disable: ['alpha'] });
+    assert.equal(again.data.undoAvailable, true);
+    await writeFile(`${alpha}.disabled`, skillText('Modified', 'Changed after bulk operation'));
+    const refused = await call('/skills/undo', 'POST', {});
+    assert.equal(refused.status, 409);
+    assert.equal(await exists(`${alpha}.disabled`), true);
+    await writeFile(alpha, skillText('Other', 'A new file at the original path'));
+    const occupied = await call('/skills/undo', 'POST', {});
+    assert.equal(occupied.status, 409);
+    await rm(alpha);
+    const on = await call('/skills/toggle', 'POST', { id: 'alpha', enabled: true });
+    assert.equal(on.status, 200);
+  });
+
+  await t.test('rejects a stale bulk preview before changing any files', async () => {
+    const result = await call('/skills/bulk', 'POST', { enabled: false, expectedPaths: [] });
+    assert.equal(result.status, 409);
+    assert.equal(await exists(alpha), true);
+    assert.equal(await exists(beta), true);
+  });
+
   await t.test('reports both-file conflicts and resolves them explicitly', async () => {
     const both = path.join(opencode, 'both/SKILL.md');
     await mkdir(path.dirname(both), { recursive: true });

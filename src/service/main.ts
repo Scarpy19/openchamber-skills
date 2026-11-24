@@ -4,11 +4,13 @@ import {
   SkillsError,
   batchSetEnabled,
   bulkSetEnabled,
+  findSkill,
   resolveBoth,
   scanSkills,
   setSkillEnabled,
 } from '../core/skills.ts';
 import { normalizeProjectDirectory, type ScanConfig } from '../core/sources.ts';
+import { BulkUndo } from '../core/undo.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -18,6 +20,7 @@ if (!port || !token) {
 }
 
 const HOME = os.homedir();
+const undo = new BulkUndo();
 
 const json = (res: http.ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, {
@@ -99,6 +102,17 @@ const scanFor = (directory: unknown): ScanConfig => ({
   projectDirectory: normalizeProjectDirectory(directory),
 });
 
+const verifyPreview = (expected: unknown, actual: string[]): void => {
+  if (expected === undefined) return; // Compatibility with older panels.
+  if (!Array.isArray(expected) || expected.some((item) => typeof item !== 'string')) {
+    throw new SkillsError('invalid-request', 400, 'Invalid preview paths.');
+  }
+  const normalized = (paths: string[]) => [...new Set(paths)].sort();
+  if (JSON.stringify(normalized(expected as string[])) !== JSON.stringify(normalized(actual))) {
+    throw new SkillsError('conflict', 409, 'Skill files changed since the preview. Rescan and confirm again.');
+  }
+};
+
 const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
   if (req.headers.authorization !== `Bearer ${token}`) {
     throw new SkillsError('unauthorized', 401, 'unauthorized');
@@ -118,14 +132,24 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     const id = stringField(body, 'id', 256);
     const enabled = booleanField(body, 'enabled');
     const config = scanFor(body.directory);
-    json(res, 200, await exclusive(() => setSkillEnabled(config, id, enabled)));
+    json(res, 200, await exclusive(() => {
+      undo.clear();
+      return setSkillEnabled(config, id, enabled);
+    }));
     return;
   }
   if (url.pathname === '/skills/bulk' && req.method === 'POST') {
     const body = await readBody(req);
     const enabled = booleanField(body, 'enabled');
     const config = scanFor(body.directory);
-    json(res, 200, await exclusive(() => bulkSetEnabled(config, enabled)));
+    json(res, 200, await exclusive(async () => {
+      undo.clear();
+      const before = await scanSkills(config);
+      verifyPreview(body.expectedPaths, before.skills.flatMap((skill) => enabled ? skill.disabledPaths : skill.activePaths));
+      const captured = await undo.capture(before);
+      const result = await bulkSetEnabled(config, enabled);
+      return { ...result, undoAvailable: await undo.remember(before, result, captured) };
+    }));
     return;
   }
   if (url.pathname === '/skills/batch' && req.method === 'POST') {
@@ -133,7 +157,26 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     const enable = stringArrayField(body, 'enable');
     const disable = stringArrayField(body, 'disable');
     const config = scanFor(body.directory);
-    json(res, 200, await exclusive(() => batchSetEnabled(config, enable, disable)));
+    json(res, 200, await exclusive(async () => {
+      undo.clear();
+      const before = await scanSkills(config);
+      verifyPreview(body.expectedPaths, [
+        ...enable.flatMap((id) => findSkill(before.skills, id).disabledPaths),
+        ...disable.flatMap((id) => findSkill(before.skills, id).activePaths),
+      ]);
+      const captured = await undo.capture(before);
+      const result = await batchSetEnabled(config, enable, disable);
+      return { ...result, undoAvailable: await undo.remember(before, result, captured) };
+    }));
+    return;
+  }
+  if (url.pathname === '/skills/undo' && req.method === 'POST') {
+    const body = await readBody(req);
+    const config = scanFor(body.directory);
+    json(res, 200, await exclusive(async () => {
+      await undo.undo(config.projectDirectory ?? null);
+      return scanSkills(config);
+    }));
     return;
   }
   if (url.pathname === '/skills/resolve' && req.method === 'POST') {
@@ -142,7 +185,10 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     const keep = body.keep === 'enabled' || body.keep === 'disabled' ? body.keep : null;
     if (!keep) throw new SkillsError('invalid-request', 400, 'keep must be enabled or disabled.');
     const config = scanFor(body.directory);
-    json(res, 200, await exclusive(() => resolveBoth(config, entryPath, keep)));
+    json(res, 200, await exclusive(() => {
+      undo.clear();
+      return resolveBoth(config, entryPath, keep);
+    }));
     return;
   }
   throw new SkillsError('not-found', 404, 'not-found');

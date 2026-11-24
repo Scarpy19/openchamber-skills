@@ -121,6 +121,14 @@ const parseSkill = (value: unknown): SkillView | null => {
       ? record.warnings.filter((item): item is string => typeof item === 'string')
       : [],
     estimatedTokens: asNumber(record.estimatedTokens),
+    ...(record.duplicateResolution && typeof record.duplicateResolution === 'object'
+      ? { duplicateResolution: (() => {
+          const resolution = record.duplicateResolution as Record<string, unknown>;
+          const status = resolution.status === 'highest-scanned' || resolution.status === 'shadowed'
+            ? resolution.status : 'unknown';
+          return { status, winningPath: asNullableString(resolution.winningPath) };
+        })() }
+      : {}),
   };
 };
 
@@ -597,6 +605,7 @@ const renderNotice = (): void => {
     }));
     node.dataset.tone = 'warning';
     node.setAttribute('role', 'status');
+    appendBulkPreview(node, visibleSkills().filter((skill) => skill.state === 'enabled' || skill.state === 'disabled'), (skill) => skill.state === 'disabled');
     const actions = el('div', 'sk-notice-actions');
     actions.append(
       actionButton(t('Confirm invert'), () => void applyInvert(), true, total === 0),
@@ -616,6 +625,7 @@ const renderNotice = (): void => {
     const node = el('div', 'sk-notice', pendingBulk ? t("Skills to enable: {count}.", { count }) : t("Skills to disable: {count}.", { count }));
     node.dataset.tone = 'warning';
     node.setAttribute('role', 'status');
+    appendBulkPreview(node, data?.skills ?? [], () => pendingBulk === true);
     const actions = el('div', 'sk-notice-actions');
     actions.append(
       actionButton(pendingBulk ? t("Confirm enable") : t("Confirm disable"), () => void applyBulk(), true),
@@ -655,13 +665,46 @@ const renderNotice = (): void => {
   }
 };
 
+const appendBulkPreview = (node: HTMLElement, skills: SkillView[], enable: (skill: SkillView) => boolean): void => {
+  const details = el('details', 'sk-preview');
+  details.open = true;
+  details.append(el('summary', '', t('Files affected (current scan)')));
+  const list = el('ul', 'sk-preview-list');
+  for (const skill of skills) {
+    const enabling = enable(skill);
+    const paths = enabling ? skill.disabledPaths : skill.activePaths;
+    for (const file of paths) {
+      const item = el('li', '');
+      item.append(el('strong', '', `${enabling ? t('Enable') : t('Disable')}: ${skill.key}`), el('code', 'sk-source-path', file));
+      list.append(item);
+    }
+  }
+  details.append(list);
+  node.append(details);
+};
+
+const undoBulk = async (): Promise<void> => {
+  if (busy) return;
+  busy = 'undo';
+  render();
+  try {
+    data = parseResponse(await skillsRequest('POST', '/skills/undo', {}));
+    notice = { text: t('The last bulk operation was undone.'), tone: 'success' };
+  } catch (error) {
+    notice = { text: describeError(error), tone: 'error' };
+  } finally {
+    busy = null;
+    render();
+  }
+};
+
 const renderSummary = (): void => {
   if (!data) {
     summary.textContent = loading ? t("Reading skills…") : t("Skills not read yet.");
     summarySecondary.textContent = t("After disabling an entry document, OpenCode no longer discovers that skill.");
     return;
   }
-  summary.textContent = t("Model sees {advertised} of {total} · about {tokens} tokens/step", {
+  summary.textContent = t("Estimated advertised entries: {advertised} of {total} · about {tokens} tokens/step", {
     advertised: data.summary.advertised,
     total: data.summary.total,
     tokens: data.summary.estimatedTokens.toLocaleString('en'),
@@ -726,8 +769,12 @@ const applyInvert = async (): Promise<void> => {
   notice = null;
   render();
   try {
-    data = parseResponse(await skillsRequest('POST', '/skills/batch', plan));
-    notice = { text: t("Inverted {count} visible skills.", { count }), tone: 'success' };
+    const expectedPaths = visibleSkills().flatMap((skill) =>
+      plan.enable.includes(skill.key) ? skill.disabledPaths : plan.disable.includes(skill.key) ? skill.activePaths : []);
+    const raw = await skillsRequest('POST', '/skills/batch', { ...plan, expectedPaths });
+    data = parseResponse(raw);
+    const undoAvailable = Boolean(raw && typeof raw === 'object' && (raw as Record<string, unknown>).undoAvailable);
+    notice = { text: t("Inverted {count} visible skills.", { count }), tone: 'success', ...(undoAvailable ? { actions: [{ label: t('Undo last action'), onClick: () => void undoBulk() }] } : {}) };
     void host.toast({ kind: 'success', message: t("Inverted {count} visible skills.", { count }) }).catch(() => undefined);
   } catch (error) {
     notice = { text: describeError(error), tone: 'error' };
@@ -819,7 +866,7 @@ const skillAction = (skill: SkillView): HTMLElement => {
     void toggleSkill(skill, !checked);
   });
 
-  if (checked) note.textContent = blocked ? t("Directory cannot be read") : skill.advertised ? t("Visible to the model") : t("Not visible to the model");
+  if (checked) note.textContent = blocked ? t("Directory cannot be read") : skill.advertised ? t("Eligible for advertisement (estimate)") : t("Not advertised (estimate)");
   else note.textContent = blocked ? t("Directory cannot be read") : t("Entry disabled");
   top.append(control);
   appendSkillMenu(top, skill);
@@ -838,6 +885,10 @@ const renderSkill = (skill: SkillView): HTMLElement => {
     badge(stateText(skill), toneForState(skill)),
     badge(skill.scope === 'project' ? t('Project') : t('Global'), skill.scope === 'project' ? 'info' : 'neutral'),
   );
+  if (skill.duplicateResolution) {
+    const status = skill.duplicateResolution.status;
+    head.append(badge(status === 'highest-scanned' ? t('Highest scanned precedence') : status === 'shadowed' ? t('Shadowed in scanned sources') : t('Duplicate: uncertain'), 'warning'));
+  }
   const meta = el('div', 'sk-meta');
   meta.append(el('code', 'sk-id', skill.id));
   if (skill.rootPath) {
@@ -1074,7 +1125,8 @@ const applyBulk = async (): Promise<void> => {
   notice = null;
   render();
   try {
-    const raw = await skillsRequest('POST', '/skills/bulk', { enabled });
+    const expectedPaths = data?.skills.flatMap((skill) => enabled ? skill.disabledPaths : skill.activePaths) ?? [];
+    const raw = await skillsRequest('POST', '/skills/bulk', { enabled, expectedPaths });
     const changed = raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).changed)
       ? ((raw as Record<string, unknown>).changed as unknown[]).filter((item): item is string => typeof item === 'string')
       : [];
@@ -1082,6 +1134,9 @@ const applyBulk = async (): Promise<void> => {
     notice = {
       text: enabled ? t("Skills enabled: {count}.", { count: changed.length }) : t("Skills disabled: {count}.", { count: changed.length }),
       tone: 'success',
+      ...(raw && typeof raw === 'object' && (raw as Record<string, unknown>).undoAvailable
+        ? { actions: [{ label: t('Undo last action'), onClick: () => void undoBulk() }] }
+        : {}),
     };
     void host.toast({ kind: 'success', message: enabled ? t("Skills enabled: {count}.", { count: changed.length }) : t("Skills disabled: {count}.", { count: changed.length }) }).catch(() => undefined);
   } catch (error) {

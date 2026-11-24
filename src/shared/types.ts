@@ -45,6 +45,10 @@ export type SkillView = {
   conflicts: ConflictView[];
   warnings: string[];
   estimatedTokens: number;
+  duplicateResolution?: {
+    status: 'highest-scanned' | 'shadowed' | 'unknown';
+    winningPath: string | null;
+  };
 };
 
 export type Summary = {

@@ -18,6 +18,7 @@ Based on [openchamber-skills](https://github.com/chenyuhao0628/openchamber-skill
 - Search by name, description, warning, scope, or ID; press `/` to focus the search field and `Esc` to clear a pending action.
 - Filter by state (All, Enabled, Disabled, Needs attention) and source (All, Global, Project). Sort by default order, estimated tokens, name, or attention level.
 - Use **List actions** to copy the qualified IDs of the current view or invert the visible enabled/disabled skills. Ambiguous entries are skipped.
+- Preview the files affected by bulk actions and undo the last bulk action while the service is running, provided those files have not changed.
 - Review a live summary of visible skills, disabled skills, conflicts, warnings, estimated tokens, the detected source directories, and the last scan time.
 - Runs as a loopback-only local service with Bearer-token checks. The service runs with the user's full permissions; the manifest declares no external network integration, executables, or sockets.
 
@@ -83,8 +84,8 @@ Use the toolbar to:
 | Condition | Behavior |
 | --- | --- |
 | `SKILL.md` and `SKILL.md.disabled` in the same directory | Blocking; choose **Keep enabled** or **Keep disabled**. The other file is backed up as `.conflict-<time>-<random>`. |
-| Several entries share one ID within one source | Warning; the effective entry is shown and toggling affects all matching entries in that source. |
-| Same ID in different sources | Shown as separate entries with qualified IDs; disabling one does not disable the others. |
+| Several entries share one ID within one source | Warning; the panel shows an entry for display and toggling affects all matching entries in that source. |
+| Same ID in different sources | Shown separately with a warning. The panel identifies the highest-precedence scanned entry when possible; disabling one does not disable the others. |
 | Unclosed frontmatter or empty entry | Warning; the entry switch still works, but OpenCode may skip the skill. |
 | No `description` or `disable: true` in frontmatter | Warning; the model will not select the skill automatically. |
 | Entry cannot be read | Warning; the entry switch remains available. |
@@ -100,10 +101,10 @@ Conflict resolution never deletes user files. Both choices preserve a backup of 
 | `$XDG_CONFIG_HOME/opencode/skills` | Yes, global OpenCode, when the environment variable is an absolute path |
 | `~/.claude/skills` | Yes, global Claude-compatible |
 | `~/.agents/skills` | Yes, global agent-compatible |
-| `<project>/.opencode/skills` | Yes, project OpenCode, when the host panel supplies a project directory |
-| `<project>/.claude/skills` | Yes, project Claude-compatible |
-| `<project>/.agents/skills` | Yes, project agent-compatible |
-| Custom `skills` paths in `opencode.json` | No; OpenChamber does not expose them to extensions |
+| `<project>/.opencode/skills` | Yes, including ancestors through the detected Git root |
+| `<project>/.claude/skills` | Yes, including ancestors through the detected Git root |
+| `<project>/.agents/skills` | Yes, including ancestors through the detected Git root |
+| Local `skills` paths in standard `opencode.json` / `opencode.jsonc` files | Yes, for the scanned global and project/ancestor configuration files |
 | Built-in skills, remote catalogs, MCP tools | No |
 
 The built-in `opencode` and `report` skills are not file entries and cannot be disabled by renaming.
@@ -121,11 +122,12 @@ The built-in `opencode` and `report` skills are not file entries and cannot be d
 ## Limitations
 
 - There is no background watcher. Rescan after skills change or reopen the panel.
-- The panel reports entries by source; it does not determine which copy OpenCode chooses when the same ID appears in different sources. Model visibility and token counts are estimates.
-- Project scanning covers the current project directory shown in the panel, not every ancestor directory or custom skill path.
+- Duplicate precedence applies only to scanned sources. Built-in skills, other configuration sources, remote catalogs, OpenCode version differences and agent permissions can change the effective result.
+- Ancestor discovery stops at the nearest `.git` file or directory. If no Git root is detected, only the current project directory is scanned. Local paths from standard global and scanned project config files are included; remote catalogs and other config locations are not.
 - Windows has not yet been verified on a Windows machine; the code and automated tests are designed to be portable.
 - Skill bodies already loaded in the current session remain available until a new session starts.
 - There is no cross-process file lock. The service serializes its own reads and writes, but another editor can still race with it; the next scan reports the resulting conflict.
+- Undo applies only to the most recent bulk or invert action in this service process; a later modification or service restart clears it. Undo checks content, metadata and destination paths but cannot prevent a concurrent external process from racing with a rename.
 - The service runs with the current user's permissions and only listens on the loopback port assigned by the host.
 - The extension does not manage translations. No translation cache or model request is created.
 

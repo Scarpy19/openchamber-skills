@@ -505,6 +505,37 @@ const buildResponse = (
     });
   }
 
+  // This describes the scanned file sources only. Configured and built-in
+  // sources and agent permissions may change what OpenCode actually loads.
+  const byId = new Map<string, SkillView[]>();
+  for (const skill of skills) {
+    const same = byId.get(skill.id) ?? [];
+    same.push(skill);
+    byId.set(skill.id, same);
+  }
+  for (const same of byId.values()) {
+    if (same.length < 2) continue;
+    const candidates = same.filter((skill) => skill.activePaths.length > 0);
+    const uncertain = candidates.some((skill) =>
+      skill.state === 'conflict' ||
+      skill.conflicts.some((conflict) => ['read-error', 'invalid', 'empty', 'duplicate'].includes(conflict.kind)));
+    const ordered = candidates.slice().sort((a, b) =>
+      (entries.find((entry) => entry.source.id === b.sourceId)?.source.priority ?? 0) -
+      (entries.find((entry) => entry.source.id === a.sourceId)?.source.priority ?? 0));
+    const winner = uncertain ? undefined : ordered[0];
+    for (const skill of same) {
+      skill.duplicateResolution = {
+        status: !winner || !skill.activePaths.length ? 'unknown' : skill === winner ? 'highest-scanned' : 'shadowed',
+        winningPath: winner?.activePaths[0] ?? null,
+      };
+      skill.warnings.push(
+        winner
+          ? `This ID exists in multiple sources. Highest-precedence scanned entry: ${winner.activePaths[0]}. Disabling one copy may leave another enabled; configured sources or permissions may change the result.`
+          : 'This ID exists in multiple sources; precedence cannot be determined reliably. Disabling one copy may leave another enabled.',
+      );
+    }
+  }
+
   skills.sort((left, right) => compareText(left.key, right.key));
   const conflicts = skills.flatMap((skill) => skill.conflicts);
   conflicts.sort((left, right) => {

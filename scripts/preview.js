@@ -3,6 +3,7 @@ let dark = params.get('theme') === 'dark';
 let width = Number(params.get('width') || 400);
 let mode = params.get('state') || 'clean';
 let resolved = false;
+let undoStates = null;
 
 const root = '~/.config/opencode/skills';
 const projectRoot = '~/workspace/.opencode/skills';
@@ -250,6 +251,7 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (method === 'POST' && route === '/skills/toggle') {
+    undoStates = null;
     const input = body ? JSON.parse(body) : {};
     const id = bareId(input.id);
     const skill = data.skills.find((item) => item.id === id);
@@ -267,6 +269,7 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (method === 'POST' && route === '/skills/resolve') {
+    undoStates = null;
     const input = body ? JSON.parse(body) : {};
     resolved = true;
     states.delta = input.keep === 'enabled';
@@ -278,20 +281,34 @@ window.addEventListener('message', (event) => {
   }
   if (method === 'POST' && route === '/skills/bulk') {
     const input = body ? JSON.parse(body) : {};
-    const ids = buildData().skills.map((skill) => skill.key);
+    undoStates = { ...states };
+    const ids = buildData().skills
+      .filter((skill) => Boolean(states[skill.id]) !== Boolean(input.enabled))
+      .map((skill) => skill.key);
     for (const id of ids) states[bareId(id)] = Boolean(input.enabled);
     resolved = true;
-    reply(event.source, message.id, 200, { ...buildData(), changed: ids });
+    reply(event.source, message.id, 200, { ...buildData(), changed: ids, undoAvailable: true });
     return;
   }
   if (method === 'POST' && route === '/skills/batch') {
     const input = body ? JSON.parse(body) : {};
+    undoStates = { ...states };
     const enable = Array.isArray(input.enable) ? input.enable : [];
     const disable = Array.isArray(input.disable) ? input.disable : [];
     for (const id of enable) states[bareId(id)] = true;
     for (const id of disable) states[bareId(id)] = false;
     resolved = true;
-    reply(event.source, message.id, 200, { ...buildData(), changed: [...new Set([...enable, ...disable])] });
+    reply(event.source, message.id, 200, { ...buildData(), changed: [...new Set([...enable, ...disable])], undoAvailable: true });
+    return;
+  }
+  if (method === 'POST' && route === '/skills/undo') {
+    if (!undoStates) {
+      reply(event.source, message.id, 409, { error: 'No undo is available.', code: 'no-undo' });
+      return;
+    }
+    states = undoStates;
+    undoStates = null;
+    reply(event.source, message.id, 200, buildData());
     return;
   }
   reply(event.source, message.id, 404, { error: 'not-found', code: 'not-found' });
