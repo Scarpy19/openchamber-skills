@@ -18,7 +18,7 @@ Based on [openchamber-skills](https://github.com/chenyuhao0628/openchamber-skill
 - Use **List actions** to copy the qualified IDs of the current view or invert the visible enabled/disabled skills. Ambiguous entries are skipped.
 - Create and edit reusable groups with a member filter, step ordering, and safe example-group import. Group actions can enable, disable, or isolate a group.
 - Review a live summary of visible skills, disabled skills, conflicts, warnings, estimated tokens, the detected source directories, and the last scan time.
-- Runs as a loopback-only local service with Bearer-token checks and no external network, exec, or socket permissions.
+- Runs as a loopback-only local service with Bearer-token checks. The service runs with the user's full permissions; the manifest declares no external network integration, executables, or sockets.
 
 ## Install
 
@@ -92,7 +92,7 @@ Groups are panel metadata, not skills, so they do not add model context. Fresh i
 - **Enable only this group** also disables file skills outside the group and asks for confirmation.
 - Group operations are blocked when the group has conflicts or missing members.
 
-When the host sets `OPENCHAMBER_SERVICE_DATA_DIR`, groups are stored in `<data-dir>/groups.json`; otherwise the legacy `~/.config/openchamber/skills-manager/groups.json` path is used. On POSIX systems the file is written with `0600` permissions; on Windows the same call is made, with Windows access control deciding the effective permissions. The file supports up to 50 groups, 40-character names, unique names and IDs, and 200 members per group. A malformed or unreadable file is reported without being silently replaced.
+When the host sets `OPENCHAMBER_SERVICE_DATA_DIR`, groups are stored in `<data-dir>/groups.json`; otherwise the legacy `~/.config/openchamber/skills-manager/groups.json` path is used. OpenChamber removes its extension data directory on uninstall, so back up your groups first if you want to keep them. On POSIX systems the file is written with `0600` permissions; on Windows access controls determine the effective permissions. The file supports up to 50 groups, 40-character names, unique names and IDs, and 200 members per group. A malformed or unreadable file is reported without being silently replaced.
 
 ### Conflicts
 
@@ -128,7 +128,7 @@ The built-in `opencode` and `report` skills are not file entries and cannot be d
 
 - All filesystem paths are composed with `node:path`; there are no hard-coded `/` separators in runtime path construction.
 - Project directories come from the host panel context and are validated as absolute paths before use.
-- Linux honors `XDG_CONFIG_HOME`; Windows and macOS fall back to the user profile directory.
+- The service honors `XDG_CONFIG_HOME` when it is present in its environment; OpenChamber may not forward it to services, in which case the user profile's `.config` directory is used.
 - Windows `EPERM`/`EBUSY` locked-file errors are reported with an actionable message, and failed renames are rolled back.
 - Frontmatter reading tolerates UTF-8 byte-order marks, CRLF line endings, quoted `#` characters, and unquoted comments.
 - Tests avoid POSIX-only assumptions: permission-mode assertions run only on non-Windows platforms, and the test glob is quoted for cross-shell use.
@@ -160,6 +160,8 @@ npm run preview
 ```
 
 `npm test` builds the bundles first. `npm run preview` serves the built panel with synthetic data on `127.0.0.1`; it never reads real skills.
+
+The extension follows the [OpenChamber SDK documentation](https://docs.openchamber.dev/sdk/), including the [Host API](https://docs.openchamber.dev/sdk/host/). See `GUEST_SERVICES.md` in the installed SDK for the service process contract.
 
 | Path | Responsibility |
 | --- | --- |

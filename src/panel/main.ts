@@ -196,10 +196,11 @@ const parseGroups = (value: unknown): SkillGroup[] => {
   }
 };
 
-const request = async (method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> => {
+const request = async (method: 'GET' | 'POST', path: string, body?: unknown, query?: Record<string, string>): Promise<unknown> => {
   const response = await host.serviceRequest({
     method,
     path,
+    ...(query ? { query } : {}),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   let parsed: unknown;
@@ -222,11 +223,13 @@ const request = async (method: 'GET' | 'POST', path: string, body?: unknown): Pr
 
 /** Every skill route needs the active project path; the service process cannot infer it. */
 const skillsRequest = async (method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> => {
-  const suffix = projectDirectory ? `${path.includes('?') ? '&' : '?'}directory=${encodeURIComponent(projectDirectory)}` : '';
+  const directory = projectDirectory;
   const payload = body === undefined || method === 'GET'
     ? undefined
-    : { ...(body as Record<string, unknown>), directory: projectDirectory ?? undefined };
-  return request(method, `${path}${suffix}`, payload);
+    : { ...(body as Record<string, unknown>), directory: directory ?? undefined };
+  const result = await request(method, path, payload, method === 'GET' && directory ? { directory } : undefined);
+  if (directory !== projectDirectory) throw new Error(t('The project changed; rescan before making changes.'));
+  return result;
 };
 
 const findVisibleSkill = (idOrKey: string): SkillView | undefined =>
@@ -341,6 +344,7 @@ root.append(app);
 
 let data: SkillsResponse | null = null;
 let loading = false;
+let scanSequence = 0;
 let loadError: string | null = null;
 let notice: Notice | null = null;
 let busy: string | null = null;
@@ -1729,18 +1733,22 @@ const focusSkill = (id: string): void => {
 };
 
 const loadSkills = async (showLoading = false, silent = false): Promise<void> => {
-  if (loading) return;
+  const sequence = ++scanSequence;
   loading = true;
   if (!silent) loadError = null;
   if (showLoading) render();
   try {
-    data = parseResponse(await skillsRequest('GET', '/skills'));
+    const response = parseResponse(await skillsRequest('GET', '/skills'));
+    if (sequence !== scanSequence) return;
+    data = response;
     loadError = null;
   } catch (error) {
-    if (!silent) loadError = describeError(error);
+    if (sequence === scanSequence && !silent) loadError = describeError(error);
   } finally {
-    loading = false;
-    render();
+    if (sequence === scanSequence) {
+      loading = false;
+      render();
+    }
   }
 };
 
@@ -1863,14 +1871,15 @@ const applyBulk = async (): Promise<void> => {
   render();
 };
 
-host.onReady((context) => {
-  applyHostReady(context, document.documentElement);
-  document.documentElement.lang = 'en';
-  document.title = t("Skills Manager");
-  const nextDirectory = typeof context.directory === 'string' && context.directory ? context.directory : null;
+const updateDirectory = (directory: string | null): void => {
+  const nextDirectory = typeof directory === 'string' && directory ? directory : null;
   if (initialized) {
     if (nextDirectory !== projectDirectory) {
       projectDirectory = nextDirectory;
+      data = null;
+      pendingBulk = null;
+      pendingInvert = false;
+      pendingOnlyGroup = null;
       selectedGroup = null;
       void loadSkills(true);
       void reloadGroups();
@@ -1883,7 +1892,16 @@ host.onReady((context) => {
   projectDirectory = nextDirectory;
   void loadSkills(true);
   void reloadGroups(true);
+};
+
+host.onReady((context) => {
+  applyHostReady(context, document.documentElement);
+  document.documentElement.lang = 'en';
+  document.title = t("Skills Manager");
+  updateDirectory(context.directory);
 });
+
+host.onDirectory((directory) => updateDirectory(directory));
 
 document.title = t("Skills Manager");
 render();
