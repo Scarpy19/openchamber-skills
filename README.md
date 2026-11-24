@@ -4,6 +4,8 @@ Skills Manager enables or disables OpenCode file skills by renaming their entry 
 
 This fork is **English-only**. The former Chinese translation subsystem, its cache, its model capability, and its UI have been removed. No API keys or hosted model calls are involved.
 
+[Install in OpenChamber](openchamber://extensions/install?url=https%3A%2F%2Fgithub.com%2FScarpy19%2Fopenchamber-skills)
+
 ## Credits and license
 
 Based on [openchamber-skills](https://github.com/chenyuhao0628/openchamber-skills) by [@chenyuhao0628](https://github.com/chenyuhao0628), the original author. This fork is a modified English-only version with expanded skill-source coverage and cross-platform fixes. The original MIT license and copyright notice are retained in [`LICENSE`](LICENSE).
@@ -29,6 +31,10 @@ https://github.com/Scarpy19/openchamber-skills
 
 Requires OpenChamber **2.7.0 or newer** (the extension uses SDK 2.7.2 for its native UI controls). No `model` capability is requested.
 
+The extension uses a local service and asks for your approval. The service runs with your user account's filesystem permissions so it can read and rename skill files. It does not request a model, account, or external network integration.
+
+This fork keeps the original extension's `skills-manager` panel ID. If the original is already installed, remove it before installing this fork; OpenChamber requires extension IDs to be unique. Enable any disabled skills before removing either extension.
+
 For local development, run `npm ci && npm run build`, then choose **Add extension → Folder** and select this directory. Allow the local service when prompted. Development requires Node.js **22.6.0 or newer**.
 
 > Enable all skills before disabling or uninstalling the extension. Disabling the extension stops the service; it does not restore skill files.
@@ -38,7 +44,7 @@ For local development, run `npm ci && npm run build`, then choose **Add extensio
 - Disable: `SKILL.md` becomes `SKILL.md.disabled`; a flat `<id>.md` becomes `<id>.md.disabled`.
 - Enable: rename the file back.
 
-The service scans the same file-skill locations OpenCode discovers, including project directories supplied by the active OpenChamber panel. After a rename, the skill disappears from the model's available list and from the `skill` tool on the next scan. Skill bodies already loaded in the current session are not withdrawn; start a new session for a clean state.
+The service scans the locations listed in [Scope](#scope), including the project directory supplied by the active OpenChamber panel. A disabled entry is not discoverable from that file. If another enabled copy of the same skill exists, OpenCode may still discover that copy. Skill bodies already loaded in the current session are not withdrawn; start a new session for a clean state.
 
 ### Qualified IDs
 
@@ -78,7 +84,7 @@ Use the toolbar to:
 | --- | --- |
 | `SKILL.md` and `SKILL.md.disabled` in the same directory | Blocking; choose **Keep enabled** or **Keep disabled**. The other file is backed up as `.conflict-<time>-<random>`. |
 | Several entries share one ID within one source | Warning; the effective entry is shown and toggling affects all matching entries in that source. |
-| Same ID in different sources | Not a conflict; shown as separate global/project entries with qualified IDs. |
+| Same ID in different sources | Shown as separate entries with qualified IDs; disabling one does not disable the others. |
 | Unclosed frontmatter or empty entry | Warning; the entry switch still works, but OpenCode may skip the skill. |
 | No `description` or `disable: true` in frontmatter | Warning; the model will not select the skill automatically. |
 | Entry cannot be read | Warning; the entry switch remains available. |
@@ -115,6 +121,9 @@ The built-in `opencode` and `report` skills are not file entries and cannot be d
 ## Limitations
 
 - There is no background watcher. Rescan after skills change or reopen the panel.
+- The panel reports entries by source; it does not determine which copy OpenCode chooses when the same ID appears in different sources. Model visibility and token counts are estimates.
+- Project scanning covers the current project directory shown in the panel, not every ancestor directory or custom skill path.
+- Windows has not yet been verified on a Windows machine; the code and automated tests are designed to be portable.
 - Skill bodies already loaded in the current session remain available until a new session starts.
 - There is no cross-process file lock. The service serializes its own reads and writes, but another editor can still race with it; the next scan reports the resulting conflict.
 - The service runs with the current user's permissions and only listens on the loopback port assigned by the host.
