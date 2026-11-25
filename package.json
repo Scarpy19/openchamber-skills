@@ -1,6 +1,6 @@
 {
   "name": "openchamber-skills",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "type": "module",
   "description": "Skills Manager for OpenChamber: toggle OpenCode skills and resolve entry conflicts.",

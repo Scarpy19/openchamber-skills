@@ -606,7 +606,8 @@ ${Kr}`;var jr="oc-sdk-ui-style",Ue=e=>{for(;e.firstChild;)e.removeChild(e.firstC
   justify-content: flex-end;
   min-width: 0;
 }
-.sk-toolbar-actions .oc-sdk-trigger {
+.sk-toolbar-actions .oc-sdk-trigger,
+.sk-toolbar-actions .oc-sdk-btn {
   height: 30px;
   font-size: 11px;
 }

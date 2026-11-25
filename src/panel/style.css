@@ -327,7 +327,8 @@
   justify-content: flex-end;
   min-width: 0;
 }
-.sk-toolbar-actions .oc-sdk-trigger {
+.sk-toolbar-actions .oc-sdk-trigger,
+.sk-toolbar-actions .oc-sdk-btn {
   height: 30px;
   font-size: 11px;
 }
