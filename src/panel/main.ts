@@ -317,6 +317,7 @@ let notice: Notice | null = null;
 let busy: string | null = null;
 let pendingBulk: boolean | null = null;
 let pendingInvert = false;
+let pendingSourceDisable: string | null = null;
 let queryRaw = '';
 let stateFilter: SkillStateFilter = 'all';
 let sourceFilter: SkillSourceFilter = 'all';
@@ -428,10 +429,11 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (event.key === 'Escape') {
-    if (pendingBulk !== null || pendingInvert) {
+    if (pendingBulk !== null || pendingInvert || pendingSourceDisable !== null) {
       event.preventDefault();
-          pendingBulk = null;
+      pendingBulk = null;
       pendingInvert = false;
+      pendingSourceDisable = null;
       render();
       return;
     }
@@ -589,6 +591,10 @@ const renderSources = (): void => {
       badge(root.scope === 'project' ? t('Project') : t('Global'), root.scope === 'project' ? 'info' : 'neutral'),
       badge(status, root.error ? 'error' : root.exists ? 'success' : 'neutral'),
     );
+    const actions = el('div', 'sk-source-actions');
+    const activeCount = snapshot.skills.filter((skill) => skill.sourceId === root.sourceId && skill.activePaths.length > 0).length;
+    const disable = actionButton(t('Disable all'), () => requestSourceDisable(root.sourceId), false, activeCount === 0);
+    actions.append(disable);
     if (root.path) {
       const open = actionButton(t('Open folder'), () => {
         void (async () => {
@@ -600,9 +606,9 @@ const renderSources = (): void => {
           }
         })();
       }, false, !root.exists);
-      open.classList.add('sk-source-open');
-      head.append(open);
+      actions.append(open);
     }
+    head.append(actions);
     item.append(head, el('code', 'sk-source-path', root.path || t('No path')));
     if (root.error) item.append(el('p', 'sk-source-error', root.error));
     list.append(item);
@@ -648,6 +654,29 @@ const renderNotice = (): void => {
       actionButton(pendingBulk ? t("Confirm enable") : t("Confirm disable"), () => void applyBulk(), true),
       actionButton(t("Cancel"), () => {
         pendingBulk = null;
+        render();
+      }),
+    );
+    node.append(actions);
+    noticeRoot.append(node);
+    return;
+  }
+  if (pendingSourceDisable !== null) {
+    const sourceId = pendingSourceDisable;
+    const root = data?.roots.find((item) => item.sourceId === sourceId);
+    const affected = (data?.skills ?? []).filter((skill) => skill.sourceId === sourceId && skill.activePaths.length > 0);
+    const node = el('div', 'sk-notice', t('Disable all skills in {source}? {count} skill(s) will be changed.', {
+      source: root?.label ?? sourceId,
+      count: affected.length,
+    }));
+    node.dataset.tone = 'warning';
+    node.setAttribute('role', 'status');
+    appendBulkPreview(node, affected, () => false);
+    const actions = el('div', 'sk-notice-actions');
+    actions.append(
+      actionButton(t('Confirm disable'), () => void applySourceDisable(), true, affected.length === 0),
+      actionButton(t('Cancel'), () => {
+        pendingSourceDisable = null;
         render();
       }),
     );
@@ -776,6 +805,7 @@ const requestInvert = (): void => {
   }
   pendingInvert = true;
   pendingBulk = null;
+  pendingSourceDisable = null;
   notice = null;
   render();
   noticeRoot.scrollIntoView({ block: 'nearest' });
@@ -1133,6 +1163,7 @@ const requestBulk = (enabled: boolean): void => {
   if (!data || busy) return;
   pendingBulk = enabled;
   pendingInvert = false;
+  pendingSourceDisable = null;
   notice = null;
   render();
   noticeRoot.scrollIntoView({ block: 'nearest' });
@@ -1173,6 +1204,57 @@ const applyBulk = async (): Promise<void> => {
   render();
 };
 
+const requestSourceDisable = (sourceId: string): void => {
+  if (!data || busy) return;
+  pendingSourceDisable = sourceId;
+  pendingBulk = null;
+  pendingInvert = false;
+  notice = null;
+  render();
+  noticeRoot.scrollIntoView({ block: 'nearest' });
+  noticeRoot.querySelector<HTMLButtonElement>('button')?.focus();
+};
+
+const applySourceDisable = async (): Promise<void> => {
+  if (!data || busy || pendingSourceDisable === null) return;
+  const sourceId = pendingSourceDisable;
+  const affected = data.skills.filter((skill) => skill.sourceId === sourceId && skill.activePaths.length > 0);
+  pendingSourceDisable = null;
+  if (affected.length === 0) {
+    render();
+    return;
+  }
+  busy = 'bulk';
+  notice = null;
+  render();
+  try {
+    const expectedPaths = affected.flatMap((skill) => skill.activePaths);
+    const raw = await skillsRequest('POST', '/skills/bulk', { enabled: false, sourceId, expectedPaths });
+    data = parseResponse(raw);
+    const changed = raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).changed)
+      ? ((raw as Record<string, unknown>).changed as unknown[]).filter((item): item is string => typeof item === 'string')
+      : affected.map((skill) => skill.key);
+    notice = {
+      text: t('Skills disabled in {source}: {count}.', {
+        source: data.roots.find((root) => root.sourceId === sourceId)?.label ?? sourceId,
+        count: changed.length,
+      }),
+      tone: 'success',
+      ...(raw && typeof raw === 'object' && (raw as Record<string, unknown>).undoAvailable
+        ? { actions: [{ label: t('Undo last action'), onClick: () => void undoBulk() }] }
+        : {}),
+    };
+  } catch (error) {
+    notice = { text: describeError(error), tone: 'error' };
+    busy = null;
+    render();
+    void loadSkills(false, true);
+    return;
+  }
+  busy = null;
+  render();
+};
+
 const updateDirectory = (directory: string | null): void => {
   const nextDirectory = typeof directory === 'string' && directory ? directory : null;
   if (initialized) {
@@ -1181,7 +1263,8 @@ const updateDirectory = (directory: string | null): void => {
       data = null;
       pendingBulk = null;
       pendingInvert = false;
-          void loadSkills(true);
+      pendingSourceDisable = null;
+      void loadSkills(true);
       } else {
       render();
     }

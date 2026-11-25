@@ -154,13 +154,15 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (url.pathname === '/skills/bulk' && req.method === 'POST') {
     const body = await readBody(req);
     const enabled = booleanField(body, 'enabled');
+    const sourceId = body.sourceId === undefined ? null : stringField(body, 'sourceId', 256);
     const config = scanFor(body.directory);
     json(res, 200, await exclusive(async () => {
       undo.clear();
       const before = await scanSkills(config);
-      verifyPreview(body.expectedPaths, before.skills.flatMap((skill) => enabled ? skill.disabledPaths : skill.activePaths));
+      const affected = before.skills.filter((skill) => !sourceId || skill.sourceId === sourceId);
+      verifyPreview(body.expectedPaths, affected.flatMap((skill) => enabled ? skill.disabledPaths : skill.activePaths));
       const captured = await undo.capture(before);
-      const result = await bulkSetEnabled(config, enabled);
+      const result = await bulkSetEnabled(config, enabled, sourceId);
       return { ...result, undoAvailable: await undo.remember(before, result, captured) };
     }));
     return;

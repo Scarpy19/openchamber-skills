@@ -40,6 +40,8 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
   await mkdir(path.dirname(other), { recursive: true });
   await writeFile(other, skillText('Other', 'Other agent skill'));
 
+
+
   const prelude = path.join(fixture, 'isolate.cjs');
   await writeFile(
     prelude,

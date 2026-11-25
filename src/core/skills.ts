@@ -739,6 +739,7 @@ export const batchSetEnabled = async (
 export const bulkSetEnabled = async (
   value: string | ScanConfig,
   enabled: boolean,
+  sourceId?: string | null,
 ): Promise<BulkResponse> => {
   const config = scanConfig(value);
   const before = await scanSkills(config);
@@ -750,6 +751,7 @@ export const bulkSetEnabled = async (
 
   const moves: Move[] = [];
   for (const skill of before.skills) {
+    if (sourceId && skill.sourceId !== sourceId) continue;
     if (!enabled) {
       for (const activePath of skill.activePaths) {
         moves.push({ id: skill.key, from: activePath, to: `${activePath}.disabled` });

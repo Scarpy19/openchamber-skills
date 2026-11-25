@@ -1555,7 +1555,7 @@ var batchSetEnabled = async (value, enable, disable) => {
   const after = await scanSkills(config);
   return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
 };
-var bulkSetEnabled = async (value, enabled) => {
+var bulkSetEnabled = async (value, enabled, sourceId) => {
   const config = scanConfig(value);
   const before = await scanSkills(config);
   assertRootReadable(before);
@@ -1565,6 +1565,7 @@ var bulkSetEnabled = async (value, enabled) => {
   }
   const moves = [];
   for (const skill of before.skills) {
+    if (sourceId && skill.sourceId !== sourceId) continue;
     if (!enabled) {
       for (const activePath of skill.activePaths) {
         moves.push({ id: skill.key, from: activePath, to: `${activePath}.disabled` });
@@ -1827,13 +1828,15 @@ var handle = async (req, res) => {
   if (url.pathname === "/skills/bulk" && req.method === "POST") {
     const body = await readBody(req);
     const enabled = booleanField(body, "enabled");
+    const sourceId = body.sourceId === void 0 ? null : stringField(body, "sourceId", 256);
     const config = scanFor(body.directory);
     json(res, 200, await exclusive(async () => {
       undo.clear();
       const before = await scanSkills(config);
-      verifyPreview(body.expectedPaths, before.skills.flatMap((skill) => enabled ? skill.disabledPaths : skill.activePaths));
+      const affected = before.skills.filter((skill) => !sourceId || skill.sourceId === sourceId);
+      verifyPreview(body.expectedPaths, affected.flatMap((skill) => enabled ? skill.disabledPaths : skill.activePaths));
       const captured = await undo.capture(before);
-      const result = await bulkSetEnabled(config, enabled);
+      const result = await bulkSetEnabled(config, enabled, sourceId);
       return { ...result, undoAvailable: await undo.remember(before, result, captured) };
     }));
     return;
