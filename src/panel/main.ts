@@ -351,7 +351,7 @@ const searchField = mountSearchField(searchSlot, {
   placeholder: t("Search name, description, or ID (press / to focus)"),
   onChange: (value) => {
     queryRaw = value;
-    renderList();
+    render();
   },
 });
 const searchInputEl = (): HTMLInputElement | null => searchSlot.querySelector<HTMLInputElement>('input');
@@ -366,7 +366,8 @@ const stateSelect = mountSelect(filterSlot, {
   options: stateFilterOptions(),
   onChange: (id) => {
     stateFilter = id === 'enabled' || id === 'disabled' || id === 'attention' ? id : 'all';
-    renderList();
+    stateSelect.update({ value: stateFilter });
+    render();
   },
 });
 const stateSelectTrigger = filterSlot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
@@ -380,7 +381,8 @@ const sourceSelect = mountSelect(sourceSlot, {
   options: sourceFilterOptions(),
   onChange: (id) => {
     sourceFilter = id === 'global' || id === 'project' ? id : 'all';
-    renderList();
+    sourceSelect.update({ value: sourceFilter });
+    render();
   },
 });
 const sourceSelectTrigger = sourceSlot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
@@ -394,7 +396,8 @@ const sortSelect = mountSelect(sortSlot, {
   options: sortModeOptions(),
   onChange: (id) => {
     sortMode = id === 'tokens' || id === 'name' || id === 'state' ? id : 'default';
-    renderList();
+    sortSelect.update({ value: sortMode });
+    render();
   },
 });
 const sortSelectTrigger = sortSlot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
@@ -939,7 +942,7 @@ const resetFilters = (): void => {
   stateSelect.update({ value: 'all', options: stateFilterOptions() });
   sourceSelect.update({ value: 'all', options: sourceFilterOptions() });
   sortSelect.update({ value: 'default', options: sortModeOptions() });
-  renderList();
+  render();
 };
 
 const renderList = (): void => {
