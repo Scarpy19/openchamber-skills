@@ -587,20 +587,23 @@ ${Kr}`;var jr="oc-sdk-ui-style",Ue=e=>{for(;e.firstChild;)e.removeChild(e.firstC
 
 .sk-toolbar {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 6px;
   margin: 0 0 6px;
 }
 .sk-search-slot {
-  flex: 0 0 auto;
+  flex: 1 1 100%;
   min-width: 0;
 }
 .sk-toolbar-selects {
+  flex: 1 1 0;
+  min-width: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 .sk-toolbar-actions {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -898,13 +901,15 @@ ${Kr}`;var jr="oc-sdk-ui-style",Ue=e=>{for(;e.firstChild;)e.removeChild(e.firstC
   }
   @media (min-width: 520px) {
     .sk-toolbar {
-      flex-direction: column;
-      align-items: stretch;
+      flex-flow: row wrap;
+      align-items: center;
     }
     .sk-search-slot {
-      flex: 0 0 auto;
+      flex: 1 1 100%;
     }
     .sk-toolbar-selects {
+      flex: 1 1 0;
+      min-width: 0;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
