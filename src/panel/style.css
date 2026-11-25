@@ -335,6 +335,10 @@
   height: 30px;
   font-size: 11px;
 }
+.sk-toolbar-actions .sk-list-menu-trigger {
+  width: 30px;
+  padding: 0;
+}
 .sk-filter-slot,
 .sk-source-slot,
 .sk-sort-slot {

@@ -282,7 +282,7 @@ const sortSlot = el('div', 'sk-sort-slot');
 toolbarSelects.append(filterSlot, sourceSlot, sortSlot);
 const listMenu = mountMenu(toolbarActions, {
   label: t('List actions'),
-  variant: 'ghost',
+  variant: 'outline',
   size: 'sm',
   items: [
     { id: 'invert', label: t('Invert visible skills') },
@@ -293,11 +293,33 @@ const listMenu = mountMenu(toolbarActions, {
     else if (id === 'copy-ids') void copyVisibleIds();
   },
 });
-const listMenuTrigger = toolbarActions.querySelector<HTMLButtonElement>('.oc-sdk-btn');
-if (listMenuTrigger) {
-  listMenuTrigger.setAttribute('aria-label', t('List actions'));
-  listMenuTrigger.title = t('Copy IDs or invert the visible skills');
+const listMenuButton = toolbarActions.querySelector<HTMLButtonElement>('.oc-sdk-btn');
+const listMenuIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+listMenuIcon.setAttribute('viewBox', '0 0 16 16');
+listMenuIcon.setAttribute('width', '16');
+listMenuIcon.setAttribute('height', '16');
+listMenuIcon.setAttribute('fill', 'currentColor');
+listMenuIcon.setAttribute('aria-hidden', 'true');
+for (const cx of ['3', '8', '13']) {
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', cx);
+  circle.setAttribute('cy', '8');
+  circle.setAttribute('r', '1.5');
+  listMenuIcon.append(circle);
 }
+const applyListMenuIcon = (): void => {
+  if (!listMenuButton) return;
+  listMenuButton.classList.add('sk-list-menu-trigger');
+  listMenuButton.setAttribute('aria-label', t('List actions'));
+  listMenuButton.title = t('Copy IDs or invert the visible skills');
+  if (listMenuButton.firstChild !== listMenuIcon) listMenuButton.replaceChildren(listMenuIcon);
+};
+const rawListMenuUpdate = listMenu.update.bind(listMenu);
+listMenu.update = (next) => {
+  rawListMenuUpdate(next);
+  applyListMenuIcon();
+};
+applyListMenuIcon();
 toolbar.append(searchSlot, toolbarSelects, toolbarActions);
 const listRoot = el('div', 'sk-list');
 listRoot.setAttribute('role', 'list');
@@ -581,6 +603,10 @@ const renderSources = (): void => {
     available,
     total: snapshot.roots.length,
   })));
+  const activeBySource = new Map<string, number>();
+  for (const skill of snapshot.skills) {
+    if (skill.activePaths.length > 0) activeBySource.set(skill.sourceId, (activeBySource.get(skill.sourceId) ?? 0) + 1);
+  }
   const list = el('ul', 'sk-source-list');
   for (const root of snapshot.roots) {
     const item = el('li', 'sk-source-item');
@@ -592,8 +618,7 @@ const renderSources = (): void => {
       badge(status, root.error ? 'error' : root.exists ? 'success' : 'neutral'),
     );
     const actions = el('div', 'sk-source-actions');
-    const activeCount = snapshot.skills.filter((skill) => skill.sourceId === root.sourceId && skill.activePaths.length > 0).length;
-    const disable = actionButton(t('Disable all'), () => requestSourceDisable(root.sourceId), false, activeCount === 0);
+    const disable = actionButton(t('Disable all'), () => requestSourceDisable(root.sourceId), false, (activeBySource.get(root.sourceId) ?? 0) === 0);
     actions.append(disable);
     if (root.path) {
       const open = actionButton(t('Open folder'), () => {
