@@ -248,6 +248,20 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     assert.equal((await call('/health')).status, 200);
   });
 
+  await t.test('rejects unknown or missing skill source open requests', async () => {
+    const unknown = await call('/sources/open', 'POST', { path: '/tmp/not-a-known-source' });
+    assert.equal(unknown.status, 400);
+    assert.equal(unknown.data.code, 'invalid-request');
+
+    const scan = await call('/skills');
+    const missing = (scan.data.roots as Array<{ path: string; exists: boolean }>).find((root) => !root.exists);
+    if (missing) {
+      const notCreated = await call('/sources/open', 'POST', { path: missing.path });
+      assert.equal(notCreated.status, 404);
+    }
+    assert.equal((await call('/sources/open', 'POST', {})).status, 400);
+  });
+
   await t.test('an unreadable root blocks writes', async () => {
     await rm(opencode, { recursive: true, force: true });
     await writeFile(opencode, 'not a directory');

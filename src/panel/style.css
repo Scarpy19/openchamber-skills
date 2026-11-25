@@ -79,6 +79,33 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+.sk-notice-dismissible {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 8px;
+  align-items: start;
+}
+.sk-notice-body {
+  min-width: 0;
+}
+.sk-notice-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.sk-notice-close:hover {
+  opacity: 1;
+}
+.sk-notice-dismissible > .sk-notice-actions,
+.sk-notice-dismissible > .sk-preview,
+.sk-notice-dismissible > details {
+  grid-column: 1 / -1;
+}
 .sk-notice[data-tone="success"] {
   background: color-mix(in srgb, var(--sk-success) 7%, var(--sk-bg));
   color: var(--oc-success-text);
@@ -247,6 +274,11 @@
 .sk-source-head strong {
   font-size: 11px;
   font-weight: 600;
+}
+.sk-source-open {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
 }
 .sk-source-path {
   display: block;

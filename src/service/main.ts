@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
+import { promisify } from 'node:util';
 import {
   SkillsError,
   batchSetEnabled,
@@ -21,6 +23,17 @@ if (!port || !token) {
 
 const HOME = os.homedir();
 const undo = new BulkUndo();
+const execFileAsync = promisify(execFile);
+
+const openFolder = async (target: string): Promise<void> => {
+  const command = process.platform === 'win32' ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  try {
+    await execFileAsync(command, [target]);
+  } catch (error) {
+    if (process.platform === 'win32') return;
+    throw error;
+  }
+};
 
 const json = (res: http.ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, {
@@ -189,6 +202,18 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
       undo.clear();
       return resolveBoth(config, entryPath, keep);
     }));
+    return;
+  }
+  if (url.pathname === '/sources/open' && req.method === 'POST') {
+    const body = await readBody(req);
+    const target = pathField(body, 'path', 4096);
+    const config = scanFor(body.directory);
+    const snapshot = await scanSkills(config);
+    const root = snapshot.roots.find((item) => item.path === target);
+    if (!root) throw new SkillsError('invalid-request', 400, 'Unknown skill source path.');
+    if (!root.exists) throw new SkillsError('not-found', 404, 'Skill source directory does not exist.');
+    await openFolder(target);
+    json(res, 200, { ok: true });
     return;
   }
   throw new SkillsError('not-found', 404, 'not-found');

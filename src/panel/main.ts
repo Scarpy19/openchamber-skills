@@ -589,6 +589,20 @@ const renderSources = (): void => {
       badge(root.scope === 'project' ? t('Project') : t('Global'), root.scope === 'project' ? 'info' : 'neutral'),
       badge(status, root.error ? 'error' : root.exists ? 'success' : 'neutral'),
     );
+    if (root.path) {
+      const open = actionButton(t('Open folder'), () => {
+        void (async () => {
+          try {
+            await skillsRequest('POST', '/sources/open', { path: root.path });
+          } catch (error) {
+            notice = { text: describeError(error), tone: 'error' };
+            render();
+          }
+        })();
+      }, false, !root.exists);
+      open.classList.add('sk-source-open');
+      head.append(open);
+    }
     item.append(head, el('code', 'sk-source-path', root.path || t('No path')));
     if (root.error) item.append(el('p', 'sk-source-error', root.error));
     list.append(item);
@@ -642,9 +656,15 @@ const renderNotice = (): void => {
     return;
   }
   if (notice) {
-    const node = el('div', 'sk-notice', notice.text);
+    const node = el('div', 'sk-notice sk-notice-dismissible');
     node.dataset.tone = notice.tone;
     node.setAttribute('role', notice.tone === 'error' ? 'alert' : 'status');
+    const body = el('div', 'sk-notice-body', notice.text);
+    const close = el('button', 'sk-notice-close', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', t('Dismiss notification'));
+    close.addEventListener('click', () => { notice = null; renderNotice(); });
+    node.append(body, close);
     if (notice.actions?.length) {
       const actions = el('div', 'sk-notice-actions');
       for (const action of notice.actions) actions.append(actionButton(action.label, action.onClick, action.primary));

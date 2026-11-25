@@ -1,6 +1,8 @@
 // src/service/main.ts
+import { execFile } from "node:child_process";
 import http from "node:http";
 import os from "node:os";
+import { promisify } from "node:util";
 
 // src/core/skills.ts
 import fs from "node:fs/promises";
@@ -1707,6 +1709,16 @@ if (!port || !token) {
 }
 var HOME = os.homedir();
 var undo = new BulkUndo();
+var execFileAsync = promisify(execFile);
+var openFolder = async (target) => {
+  const command = process.platform === "win32" ? "explorer" : process.platform === "darwin" ? "open" : "xdg-open";
+  try {
+    await execFileAsync(command, [target]);
+  } catch (error) {
+    if (process.platform === "win32") return;
+    throw error;
+  }
+};
 var json = (res, status, body) => {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -1863,6 +1875,18 @@ var handle = async (req, res) => {
       undo.clear();
       return resolveBoth(config, entryPath, keep);
     }));
+    return;
+  }
+  if (url.pathname === "/sources/open" && req.method === "POST") {
+    const body = await readBody(req);
+    const target = pathField(body, "path", 4096);
+    const config = scanFor(body.directory);
+    const snapshot = await scanSkills(config);
+    const root = snapshot.roots.find((item) => item.path === target);
+    if (!root) throw new SkillsError("invalid-request", 400, "Unknown skill source path.");
+    if (!root.exists) throw new SkillsError("not-found", 404, "Skill source directory does not exist.");
+    await openFolder(target);
+    json(res, 200, { ok: true });
     return;
   }
   throw new SkillsError("not-found", 404, "not-found");
