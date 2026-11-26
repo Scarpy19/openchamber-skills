@@ -213,7 +213,8 @@ test('discovers ancestor roots in a git worktree and reports scanned precedence'
   assert.equal(ancestor?.duplicateResolution?.status, 'shadowed');
   assert.equal(current?.duplicateResolution?.status, 'highest-scanned');
   assert.equal(ancestor?.duplicateResolution?.winningPath, currentFile);
-  assert.ok(ancestor?.warnings.some((warning) => warning.includes('another enabled')));
+  assert.ok(ancestor?.warnings.some((warning) => warning.includes('Highest-precedence scanned entry')));
+  assert.ok(ancestor?.conflicts.some((conflict) => conflict.kind === 'duplicate' && conflict.suggestion));
 });
 
 test('discovers local JSONC configured skill paths with precedence over standard roots', async (t) => {

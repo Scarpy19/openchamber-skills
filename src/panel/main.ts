@@ -91,6 +91,7 @@ const parseConflict = (value: unknown): ConflictView | null => {
     kind: record.kind,
     skillId: record.skillId,
     message: asString(record.message, t("Conflict")),
+    suggestion: asNullableString(record.suggestion),
     activePath: asNullableString(record.activePath),
     disabledPath: asNullableString(record.disabledPath),
     blocking: asBool(record.blocking),
@@ -531,6 +532,7 @@ const conflictItem = (conflict: ConflictView): HTMLElement => {
   item.dataset.tone = conflict.blocking ? 'error' : 'warning';
   const copy = el('div', 'sk-conflict-copy');
   copy.append(el('strong', '', conflictTitle(conflict.kind)), el('p', 'sk-conflict-message', conflict.message));
+  if (conflict.suggestion) copy.append(el('p', 'sk-conflict-suggestion', t('Fix: {suggestion}', { suggestion: conflict.suggestion })));
   if (conflict.kind === 'both') {
     copy.append(pathLine(t("Active entry"), conflict.activePath) ?? el('span'));
     copy.append(pathLine(t("Disabled entry"), conflict.disabledPath) ?? el('span'));
@@ -559,7 +561,8 @@ const renderConflicts = (): void => {
       kind: 'read-error' as const,
       skillId: '',
       message: t("Cannot read {label}: {error} ({path})", { label: root.label, error: root.error ?? '', path: root.path }),
-      activePath: null,
+      suggestion: t('Check that the directory exists and is readable, then rescan.'),
+      activePath: root.path || null,
       disabledPath: null,
       blocking: true,
     }));
@@ -999,9 +1002,18 @@ const renderSkill = (skill: SkillView): HTMLElement => {
     });
     main.append(toggleDesc);
   }
-  if (skill.warnings.length > 0) {
-    const warning = el('p', 'sk-warn', skill.warnings.slice(0, 2).join(' · '));
-    main.append(warning);
+  const diagnostics = skill.conflicts.filter((conflict) => conflict.kind !== 'both');
+  if (diagnostics.length > 0) {
+    const list = el('ul', 'sk-diagnostics');
+    for (const conflict of diagnostics) {
+      const item = el('li', 'sk-diagnostic');
+      item.append(el('p', 'sk-diagnostic-message', conflict.message));
+      if (conflict.suggestion) item.append(el('p', 'sk-diagnostic-fix', t('Fix: {suggestion}', { suggestion: conflict.suggestion })));
+      const file = conflict.activePath ?? conflict.disabledPath;
+      if (file) item.append(el('code', 'sk-diagnostic-file', file));
+      list.append(item);
+    }
+    main.append(list);
   }
   row.append(main, skillAction(skill));
   return row;

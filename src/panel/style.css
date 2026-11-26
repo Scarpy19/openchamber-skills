@@ -216,6 +216,13 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+.sk-conflict-suggestion {
+  margin: 2px 0 0;
+  color: var(--sk-fg);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .sk-path {
   display: flex;
   gap: 4px;
@@ -472,11 +479,35 @@
   color: var(--sk-fg);
   text-decoration: underline;
 }
-.sk-warn {
+.sk-diagnostics {
+  list-style: none;
   margin: 6px 0 0;
-  color: var(--oc-warning-text);
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.sk-diagnostic {
+  padding: 6px 8px;
+  border-left: 2px solid var(--sk-warning);
+  background: color-mix(in srgb, var(--sk-warning) 5%, transparent);
+  border-radius: 0 var(--oc-radius, 6px) var(--oc-radius, 6px) 0;
+}
+.sk-diagnostic-message,
+.sk-diagnostic-fix {
+  margin: 0;
   font-size: 11px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sk-diagnostic-message { color: var(--oc-warning-text); }
+.sk-diagnostic-fix { color: var(--sk-fg); margin-top: 2px; }
+.sk-diagnostic-file {
+  display: block;
+  margin-top: 2px;
+  color: var(--sk-muted);
+  font-family: var(--oc-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 .sk-skill-action {

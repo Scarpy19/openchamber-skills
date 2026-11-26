@@ -1262,6 +1262,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
           kind: "both",
           skillId: key,
           message: "Both an enabled and a disabled entry exist in the same directory. Choose which one to keep first.",
+          suggestion: "Use Keep active or Keep disabled to resolve the conflict.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: true
@@ -1272,6 +1273,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
           kind: "read-error",
           skillId: key,
           message: `Could not read the entry: ${entry.error}`,
+          suggestion: "Check file permissions and format, then rescan.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false
@@ -1282,6 +1284,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
           kind: "invalid",
           skillId: key,
           message: "The frontmatter is not closed; OpenCode may skip this skill, but the entry switch still works.",
+          suggestion: "Close the frontmatter with a final --- line, then rescan.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false
@@ -1292,6 +1295,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
           kind: "empty",
           skillId: key,
           message: "The entry file is empty; OpenCode will not load it.",
+          suggestion: "Add frontmatter and instructions, or disable/remove the empty file.",
           activePath: entry.activePath,
           disabledPath: entry.disabledPath,
           blocking: false
@@ -1304,6 +1308,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
         kind: "duplicate",
         skillId: key,
         message: `There are ${group.length} entries with this ID; the effective entry is ${winnerLabel}.`,
+        suggestion: "Keep one entry or rename files so IDs are unique within the source.",
         activePath: winner?.activePath ?? null,
         disabledPath: winner?.disabledPath ?? null,
         blocking: false
@@ -1314,6 +1319,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
         kind: "manual",
         skillId: key,
         message: "The entry is enabled but marked for manual invocation only; the model cannot see it.",
+        suggestion: "Remove disable-model-invocation or set metadata.opencode/autoinvoke: true if the model should discover it.",
         activePath: winner.activePath,
         disabledPath: winner.disabledPath,
         blocking: false
@@ -1324,6 +1330,7 @@ var buildResponse = (roots, entries, projectDirectory) => {
         kind: "no-description",
         skillId: key,
         message: "The entry is enabled but has no description; the model will not select it automatically.",
+        suggestion: "Add a description field to frontmatter so the model can select it.",
         activePath: winner.activePath,
         disabledPath: winner.disabledPath,
         blocking: false
@@ -1369,9 +1376,18 @@ var buildResponse = (roots, entries, projectDirectory) => {
         status: !winner || !skill.activePaths.length ? "unknown" : skill === winner ? "highest-scanned" : "shadowed",
         winningPath: winner?.activePaths[0] ?? null
       };
-      skill.warnings.push(
-        winner ? `This ID exists in multiple sources. Highest-precedence scanned entry: ${winner.activePaths[0]}. Disabling one copy may leave another enabled; configured sources or permissions may change the result.` : "This ID exists in multiple sources; precedence cannot be determined reliably. Disabling one copy may leave another enabled."
-      );
+      const message = winner ? `This ID exists in multiple sources. Highest-precedence scanned entry: ${winner.activePaths[0]}.` : "This ID exists in multiple sources; precedence cannot be determined reliably.";
+      const suggestion = winner ? "Disable or rename the lower-priority copy if you want only one source. Check OpenCode config/permissions if behavior differs." : "Compare the source paths and OpenCode config to confirm which copy loads.";
+      skill.conflicts.push({
+        kind: "duplicate",
+        skillId: skill.id,
+        message,
+        suggestion,
+        activePath: skill.activePaths[0] ?? null,
+        disabledPath: skill.disabledPaths[0] ?? null,
+        blocking: false
+      });
+      skill.warnings.push(`${message} ${suggestion}`);
     }
   }
   skills.sort((left, right) => compareText(left.key, right.key));

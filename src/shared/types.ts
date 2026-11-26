@@ -24,6 +24,7 @@ export type ConflictView = {
   kind: ConflictKind;
   skillId: string;
   message: string;
+  suggestion: string | null;
   activePath: string | null;
   disabledPath: string | null;
   blocking: boolean;
